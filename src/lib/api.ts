@@ -1,0 +1,338 @@
+import { invoke } from "@tauri-apps/api/core";
+
+export type Loader = "vanilla" | "fabric" | "quilt" | "forge" | "neoforge";
+export const LOADERS: Loader[] = ["vanilla", "fabric", "quilt", "forge", "neoforge"];
+
+export interface ApiError {
+  code: string;
+  message: string;
+}
+
+export interface AppInfo {
+  version: string;
+  dataDir: string;
+  configDir: string;
+  totalMemoryMb: number;
+  os: string;
+  arch: string;
+}
+
+export interface Settings {
+  language: "uk" | "en";
+  dataDir: string | null;
+  memoryMb: number;
+  javaPath: string | null;
+  jvmArgs: string;
+  width: number;
+  height: number;
+  fullscreen: boolean;
+  onLaunch: "keep" | "minimize" | "close";
+  concurrency: number;
+  msClientId: string;
+  selectedAccount: string | null;
+  lastInstance: string | null;
+  showFeatured: boolean;
+  showSnapshots: boolean;
+}
+
+export interface ModpackRef {
+  projectId: string;
+  versionId: string;
+  name: string;
+  versionName: string;
+  iconUrl?: string | null;
+}
+
+export interface Instance {
+  id: string;
+  name: string;
+  icon: string;
+  mcVersion: string;
+  loader: Loader;
+  loaderVersion?: string | null;
+  versionId?: string | null;
+  memoryMb?: number | null;
+  javaPath?: string | null;
+  jvmArgs?: string | null;
+  width?: number | null;
+  height?: number | null;
+  fullscreen?: boolean | null;
+  created: number;
+  lastPlayed?: number | null;
+  playTime: number;
+  featured?: string | null;
+  modpack?: ModpackRef | null;
+}
+
+export interface NewInstance {
+  name: string;
+  mcVersion: string;
+  loader: Loader;
+  loaderVersion?: string | null;
+  icon?: string;
+}
+
+export interface VersionEntry {
+  id: string;
+  kind: "release" | "snapshot" | "old_beta" | "old_alpha";
+  releaseTime: string;
+}
+
+export interface LoaderVersion {
+  id: string;
+  name: string;
+  stable: boolean;
+}
+
+export interface TaskEvent {
+  id: number;
+  title: string;
+  tag: string | null;
+  stage: string;
+  unit: "bytes" | "items" | "";
+  done: number;
+  total: number;
+  state: "running" | "done" | "error" | "cancelled";
+  error: ApiError | null;
+}
+
+export interface LogLine {
+  t: number;
+  level: string;
+  thread: string;
+  text: string;
+}
+
+export interface CrashInfo {
+  kind: string;
+  detail?: string | null;
+  reportPath?: string | null;
+}
+
+export interface GameEvent {
+  instanceId: string;
+  state: "running" | "exited";
+  pid?: number;
+  started?: number;
+  code?: number | null;
+  killed?: boolean;
+  crash?: CrashInfo | null;
+}
+
+export interface Account {
+  id: string;
+  kind: "microsoft" | "offline";
+  name: string;
+  uuid: string;
+  added: number;
+}
+
+export interface AccountsState {
+  accounts: Account[];
+  selected: string | null;
+  msAvailable: boolean;
+}
+
+export interface SkinInfo {
+  skin: string | null;
+  slim: boolean;
+  capes: { id: string; alias?: string | null; active: boolean; url?: string | null }[];
+  source: "microsoft" | "mojang_name" | "default";
+}
+
+export interface ContentItem {
+  file: string;
+  name: string;
+  enabled: boolean;
+  isDir: boolean;
+  size: number;
+  modified: number;
+  projectId?: string | null;
+  version?: string | null;
+  iconUrl?: string | null;
+  description?: string | null;
+}
+
+export interface ContentUpdate {
+  file: string;
+  versionId: string;
+  versionNumber: string;
+  projectId: string;
+}
+
+export interface World {
+  folder: string;
+  icon?: string | null;
+  modified: number;
+  size: number;
+}
+
+export interface Shot {
+  path: string;
+  name: string;
+  modified: number;
+}
+
+export interface Featured {
+  id: string;
+  name: string;
+  address: string;
+  port: number;
+  mcVersion: string;
+  loader: Loader;
+  mods: string[];
+  website?: string | null;
+  descriptionUk: string;
+  descriptionEn: string;
+}
+
+export interface ServerStatus {
+  online: number;
+  max: number;
+  version: string;
+  motd: unknown;
+  favicon?: string | null;
+  latencyMs: number;
+  players: string[];
+}
+
+export interface NewsEntry {
+  id: string;
+  title: string;
+  version: string;
+  kind: string;
+  image?: string | null;
+  contentPath: string;
+  date: string;
+  shortText: string;
+}
+
+export interface McScan {
+  path: string;
+  exists: boolean;
+  saves: { folder: string; size: number }[];
+  resourcepacks: number;
+  shaderpacks: number;
+  mods: number;
+  hasOptions: boolean;
+  hasServers: boolean;
+  lastVersion: [string, string] | null;
+}
+
+export type ContentKind = "mods" | "resourcepacks" | "shaderpacks";
+export type ProjectType = "mod" | "modpack" | "resourcepack" | "shader";
+
+export interface SearchParams {
+  query: string;
+  projectType: ProjectType;
+  gameVersion?: string | null;
+  loader?: string | null;
+  categories?: string[];
+  sort?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export interface SearchHit {
+  project_id: string;
+  slug: string;
+  title: string;
+  description: string;
+  author: string;
+  icon_url?: string | null;
+  downloads: number;
+  follows: number;
+  date_modified: string;
+  categories: string[];
+  display_categories?: string[];
+  project_type: string;
+  gallery?: string[];
+  featured_gallery?: string | null;
+  color?: number | null;
+}
+
+export interface SearchResult {
+  hits: SearchHit[];
+  offset: number;
+  limit: number;
+  total_hits: number;
+}
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+export type Json = any;
+
+export function errorOf(e: unknown): ApiError {
+  if (e && typeof e === "object" && "code" in e) return e as ApiError;
+  return { code: "unknown", message: String(e) };
+}
+
+export const api = {
+  appInfo: () => invoke<AppInfo>("app_info"),
+  openUrl: (url: string) => invoke<void>("open_url", { url }),
+  openPath: (path: string, reveal = false) => invoke<void>("open_path", { path, reveal }),
+  taskCancel: (id: number) => invoke<void>("task_cancel", { id }),
+
+  settingsGet: () => invoke<Settings>("settings_get"),
+  settingsSet: (settings: Settings) => invoke<Settings>("settings_set", { settings }),
+  javaProbe: (path: string) => invoke<{ line: string; major: number | null }>("java_probe", { path }),
+
+  versions: (refresh = false) =>
+    invoke<{ latest: { release: string; snapshot: string }; versions: VersionEntry[] }>("versions_list", { refresh }),
+  loaderVersions: (loader: Loader, mc: string) => invoke<LoaderVersion[]>("loader_versions", { loader, mc }),
+  loaderGames: (loader: Loader) => invoke<string[]>("loader_games", { loader }),
+
+  instances: () => invoke<Instance[]>("instances_list"),
+  instance: (id: string) => invoke<Instance>("instance_get", { id }),
+  instanceCreate: (spec: NewInstance) => invoke<Instance>("instance_create", { spec }),
+  instanceUpdate: (id: string, patch: Record<string, unknown>) => invoke<Instance>("instance_update", { id, patch }),
+  instanceSetIconFile: (id: string, path: string) => invoke<Instance>("instance_set_icon_file", { id, path }),
+  instanceDelete: (id: string) => invoke<void>("instance_delete", { id }),
+  instanceDuplicate: (id: string, suffix: string) => invoke<Instance>("instance_duplicate", { id, suffix }),
+  instanceFolder: (id: string, sub?: string) => invoke<string>("instance_folder", { id, sub }),
+  launch: (id: string, server?: { host: string; port?: number }, world?: string) => invoke<void>("instance_launch", { id, server, world }),
+  repair: (id: string) => invoke<void>("instance_repair", { id }),
+  kill: (id: string) => invoke<boolean>("instance_kill", { id }),
+  gameLog: (id: string) => invoke<LogLine[]>("game_log", { id }),
+  running: () => invoke<{ instanceId: string; pid: number; started: number }[]>("games_running"),
+
+  featured: () => invoke<Featured>("featured_get"),
+  featuredPlay: () => invoke<string>("featured_play"),
+  ping: (host: string, port?: number) => invoke<ServerStatus>("server_ping", { host, port }),
+
+  content: (id: string, kind: ContentKind) => invoke<ContentItem[]>("content_list", { id, kind }),
+  contentToggle: (id: string, kind: ContentKind, file: string) => invoke<string>("content_toggle", { id, kind, file }),
+  contentRemove: (id: string, kind: ContentKind, file: string) => invoke<void>("content_remove", { id, kind, file }),
+  contentAdd: (id: string, kind: ContentKind, files: string[]) => invoke<number>("content_add", { id, kind, files }),
+  contentIdentify: (id: string, kind: ContentKind) => invoke<ContentItem[]>("content_identify", { id, kind }),
+  contentUpdates: (id: string, kind: ContentKind) => invoke<ContentUpdate[]>("content_updates", { id, kind }),
+  contentUpdate: (id: string, kind: ContentKind, u: ContentUpdate) =>
+    invoke<void>("content_update", { id, kind, file: u.file, projectId: u.projectId, versionId: u.versionId }),
+  worlds: (id: string) => invoke<World[]>("worlds_list", { id }),
+  screenshots: (id: string) => invoke<Shot[]>("screenshots_list", { id }),
+  trashGameFile: (id: string, rel: string) => invoke<void>("game_file_trash", { id, rel }),
+
+  search: (params: SearchParams) => invoke<SearchResult>("mr_search", { params }),
+  project: (id: string) => invoke<Json>("mr_project", { id }),
+  projectVersions: (id: string, loaders: string[], gameVersions: string[]) =>
+    invoke<Json[]>("mr_versions", { id, loaders, gameVersions }),
+  install: (instanceId: string, projectId: string, versionId?: string) =>
+    invoke<{ projectId: string; title: string; file: string }[]>("mr_install", { instanceId, projectId, versionId }),
+  installModpack: (versionId: string, title: string) => invoke<Instance>("mr_install_modpack", { versionId, title }),
+  importMrpack: (path: string) => invoke<Instance>("mrpack_import", { path }),
+
+  accounts: () => invoke<AccountsState>("accounts_list"),
+  addOffline: (name: string) => invoke<Account>("account_add_offline", { name }),
+  selectAccount: (id: string) => invoke<void>("account_select", { id }),
+  removeAccount: (id: string) => invoke<void>("account_remove", { id }),
+  loginMicrosoft: () => invoke<Account>("account_login_ms"),
+  skin: (id: string) => invoke<SkinInfo>("account_skin", { id }),
+  uploadSkin: (id: string, path: string, slim: boolean) => invoke<void>("skin_upload", { id, path, slim }),
+  setCape: (id: string, capeId: string | null) => invoke<void>("cape_set", { id, capeId }),
+
+  mcdirScan: (path?: string) => invoke<McScan>("mcdir_scan", { path }),
+  mcdirImport: (path: string, spec: NewInstance, what: { saves: string[]; resourcepacks: boolean; shaderpacks: boolean; mods: boolean; options: boolean }) =>
+    invoke<Instance>("mcdir_import", { path, spec, what }),
+
+  news: () => invoke<NewsEntry[]>("news_list"),
+  newsBody: (path: string) => invoke<string>("news_body", { path }),
+};

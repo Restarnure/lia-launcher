@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="top" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFE173"/>
+      <stop offset="1" stop-color="#FFC81F"/>
+    </linearGradient>
+    <linearGradient id="left" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3D7BFF"/>
+      <stop offset="1" stop-color="#2459D6"/>
+    </linearGradient>
+    <linearGradient id="right" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1D4AB5"/>
+      <stop offset="1" stop-color="#14347F"/>
+    </linearGradient>
+  </defs>
+  <polygon points="512,92 878,303 512,514 146,303" fill="url(#top)"/>
+  <polygon points="146,303 512,514 512,936 146,725" fill="url(#left)"/>
+  <polygon points="512,514 878,303 878,725 512,936" fill="url(#right)"/>
+  <!-- піксельні грані: світла смуга по верхньому ребру й тінь по низу -->
+  <polygon points="512,92 878,303 832,330 512,145 192,330 146,303" fill="#FFF1B0" opacity="0.55"/>
+  <polygon points="146,303 192,330 192,698 512,883 512,936 146,725" fill="#6E9BFF" opacity="0.35"/>
+  <polygon points="512,883 832,698 832,330 878,303 878,725 512,936" fill="#0B2257" opacity="0.35"/>
+</svg>
