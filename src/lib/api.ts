@@ -135,9 +135,26 @@ export interface AccountsState {
 
 export interface SkinInfo {
   skin: string | null;
+  /** Адреса текстури на серверах Mojang (лише Microsoft). */
+  url?: string | null;
   slim: boolean;
   capes: { id: string; alias?: string | null; active: boolean; url?: string | null }[];
   source: "microsoft" | "mojang_name" | "default";
+}
+
+export interface LibSkin {
+  id: string;
+  name: string;
+  slim: boolean;
+  added: number;
+  source: string;
+  data: string;
+}
+
+export interface SkinsState {
+  skins: LibSkin[];
+  defaults: LibSkin[];
+  applied: Record<string, { skin: string; url: string }>;
 }
 
 export interface ContentItem {
@@ -326,8 +343,14 @@ export const api = {
   removeAccount: (id: string) => invoke<void>("account_remove", { id }),
   loginMicrosoft: () => invoke<Account>("account_login_ms"),
   skin: (id: string) => invoke<SkinInfo>("account_skin", { id }),
-  uploadSkin: (id: string, path: string, slim: boolean) => invoke<void>("skin_upload", { id, path, slim }),
   setCape: (id: string, capeId: string | null) => invoke<void>("cape_set", { id, capeId }),
+  skins: () => invoke<SkinsState>("skins_list"),
+  skinAddFile: (path: string) => invoke<LibSkin>("skin_add_file", { path }),
+  skinAddNick: (nick: string) => invoke<LibSkin>("skin_add_nick", { nick }),
+  skinSaveCurrent: (id: string) => invoke<LibSkin>("skin_save_current", { id }),
+  skinUpdate: (id: string, patch: { name?: string; slim?: boolean }) => invoke<void>("skin_update", { id, ...patch }),
+  skinRemove: (id: string) => invoke<void>("skin_remove", { id }),
+  skinApply: (accountId: string, skinId: string, slim: boolean) => invoke<void>("skin_apply", { accountId, skinId, slim }),
 
   mcdirScan: (path?: string) => invoke<McScan>("mcdir_scan", { path }),
   mcdirImport: (path: string, spec: NewInstance, what: { saves: string[]; resourcepacks: boolean; shaderpacks: boolean; mods: boolean; options: boolean }) =>

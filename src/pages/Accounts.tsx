@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { IdleAnimation, SkinViewer, WalkingAnimation } from "skinview3d";
-import { Check, Plus, Trash2, Upload, UserRound } from "lucide-react";
+import { Check, Plus, Shirt, Trash2, UserRound } from "lucide-react";
 import { api, type Account, type SkinInfo } from "../lib/api";
 import { t } from "../lib/i18n";
-import { fail, refreshAccounts, setState, toast, useStore } from "../lib/store";
+import { fail, navigate, refreshAccounts, setState, useStore } from "../lib/store";
 import { confirmDialog, Empty, loadSkin, SkinHead, Switch } from "../components/ui";
 
 export function Accounts() {
@@ -88,7 +87,6 @@ function SkinPanel({ account }: { account: Account }) {
   const viewer = useRef<SkinViewer | null>(null);
   const [info, setInfo] = useState<SkinInfo | null>(null);
   const [walk, setWalk] = useState(true);
-  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -131,35 +129,7 @@ function SkinPanel({ account }: { account: Account }) {
     v.animation = anim;
   }, [walk]);
 
-  const changeSkin = async (slim: boolean) => {
-    const path = await open({ multiple: false, filters: [{ name: "PNG", extensions: ["png"] }] });
-    if (typeof path !== "string") return;
-    setBusy(true);
-    try {
-      await api.uploadSkin(account.id, path, slim);
-      setInfo(await loadSkin(account.id, true));
-      toast("success", t("acc.skin_done"));
-    } catch (e) {
-      fail(e);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const setCape = async (id: string | null) => {
-    setBusy(true);
-    try {
-      await api.setCape(account.id, id);
-      setInfo(await loadSkin(account.id, true));
-    } catch (e) {
-      fail(e);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const ms = account.kind === "microsoft";
-  const activeCape = info?.capes.find((c) => c.active)?.id ?? null;
 
   return (
     <div className="skin-panel card">
@@ -176,62 +146,12 @@ function SkinPanel({ account }: { account: Account }) {
           <Switch on={walk} onChange={setWalk} />
           {t("acc.walk")}
         </label>
-        {ms ? (
-          <>
-            <div className="field">
-              <label>{t("acc.change_skin")}</label>
-              <div className="row">
-                <button className="btn sm" disabled={busy} onClick={() => changeSkin(false)}>
-                  <Upload size={14} />
-                  {t("acc.classic")}
-                </button>
-                <button className="btn sm" disabled={busy} onClick={() => changeSkin(true)}>
-                  <Upload size={14} />
-                  {t("acc.slim")}
-                </button>
-              </div>
-            </div>
-            {info && info.capes.length > 0 && (
-              <div className="field">
-                <label>{t("acc.capes")}</label>
-                <div className="capes">
-                  <button className={`cape ${activeCape === null ? "on" : ""}`} disabled={busy} onClick={() => setCape(null)}>
-                    {t("acc.no_cape")}
-                  </button>
-                  {info.capes.map((c) => (
-                    <button key={c.id} className={`cape ${c.active ? "on" : ""}`} disabled={busy} onClick={() => setCape(c.id)} title={c.alias ?? ""}>
-                      {c.url ? <CapeFront url={c.url} /> : null}
-                      <small>{c.alias}</small>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </>
-        ) : (
-          <p className="hint">{info?.source === "mojang_name" ? t("acc.skin_by_name") : t("acc.skin_default")}</p>
-        )}
+        {!ms && <p className="hint">{info?.source === "mojang_name" ? t("acc.skin_by_name") : t("acc.skin_default")}</p>}
+        <button className="btn primary" style={{ alignSelf: "flex-start" }} onClick={() => navigate({ page: "skins", accountId: account.id })}>
+          <Shirt size={15} />
+          {t("acc.change_skin")}
+        </button>
       </div>
     </div>
   );
-}
-
-/** Передня частина плаща (10×16 пікселів текстури) для мініатюри. */
-function CapeFront({ url }: { url: string }) {
-  const [src, setSrc] = useState("");
-  useEffect(() => {
-    const img = new Image();
-    img.onload = () => {
-      const c = document.createElement("canvas");
-      c.width = 40;
-      c.height = 64;
-      const g = c.getContext("2d")!;
-      g.imageSmoothingEnabled = false;
-      const k = img.width / 64;
-      g.drawImage(img, 1 * k, 1 * k, 10 * k, 16 * k, 0, 0, 40, 64);
-      setSrc(c.toDataURL());
-    };
-    img.src = url;
-  }, [url]);
-  return src ? <img src={src} width={30} height={48} alt="" style={{ imageRendering: "pixelated" }} /> : null;
 }

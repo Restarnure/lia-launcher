@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { AlertTriangle, Boxes, CheckCircle2, Compass, Copy, Download, FileText, Home, Info, Minus, Settings as SettingsIcon, Square, Terminal, X, XCircle } from "lucide-react";
+import { AlertTriangle, Boxes, Shirt, CheckCircle2, Compass, Copy, Download, FileText, Home, Info, Minus, Settings as SettingsIcon, Square, Terminal, X, XCircle } from "lucide-react";
 import { api, type ContentKind } from "../lib/api";
 import { bytes } from "../lib/format";
 import { t, type Key } from "../lib/i18n";
 import { dismissToast, fail, getState, navigate, refreshInstances, setState, toast, useStore } from "../lib/store";
 import { Modal, Progress, SkinHead, stageLabel } from "./ui";
+import { UpdatePill } from "./Update";
 import logo from "../assets/logo.svg";
 
 export function Logo({ size = 22 }: { size?: number }) {
@@ -24,6 +25,7 @@ export function TitleBar() {
         <b>ЛІЯ</b>
       </div>
       <div className="drag" data-tauri-drag-region />
+      <UpdatePill />
       <TasksButton />
       <button className="win-btn" onClick={() => win.minimize()} aria-label={t("common.minimize")}>
         <Minus size={16} />
@@ -113,10 +115,11 @@ export function Sidebar() {
   const route = useStore((s) => s.route);
   const accounts = useStore((s) => s.accounts);
   const me = accounts.accounts.find((a) => a.id === accounts.selected);
-  const items: { page: "home" | "instances" | "browse" | "settings"; icon: React.ReactNode; label: Key }[] = [
+  const items: { page: "home" | "instances" | "browse" | "skins"; icon: React.ReactNode; label: Key }[] = [
     { page: "home", icon: <Home size={21} />, label: "nav.home" },
     { page: "instances", icon: <Boxes size={21} />, label: "nav.instances" },
     { page: "browse", icon: <Compass size={21} />, label: "nav.browse" },
+    { page: "skins", icon: <Shirt size={21} />, label: "nav.skins" },
   ];
   const active = route.page === "instance" ? "instances" : route.page;
   return (
@@ -254,6 +257,14 @@ export function DropHandler() {
               fail(err);
             }
           }
+          const pngs = p.paths.filter((x) => x.toLowerCase().endsWith(".png"));
+          if (r.page === "skins" && pngs.length) {
+            let n = 0;
+            for (const f of pngs) await api.skinAddFile(f).then(() => n++, fail);
+            if (n) toast("success", t("skins.added", { n }));
+            window.dispatchEvent(new CustomEvent("lia:skins-changed"));
+            return;
+          }
           if (r.page !== "instance") return;
           const groups: Partial<Record<ContentKind, string[]>> = {};
           for (const f of p.paths) {
@@ -276,9 +287,10 @@ export function DropHandler() {
   const message = useMemo(() => {
     if (!hover) return null;
     if (hover.some((p) => p.toLowerCase().endsWith(".mrpack"))) return t("drop.mrpack");
+    if (route.page === "skins" && hover.some((p) => p.toLowerCase().endsWith(".png"))) return t("drop.skins");
     if (inst) return t("drop.mods", { name: inst.name });
     return t("drop.nowhere");
-  }, [hover, inst]);
+  }, [hover, inst, route.page]);
 
   if (!message) return null;
   return (

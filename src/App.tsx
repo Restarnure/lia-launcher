@@ -9,9 +9,11 @@ import { InstanceView } from "./pages/InstanceView";
 import { Browse } from "./pages/Browse";
 import { AddAccount } from "./components/AddAccount";
 import { Settings } from "./pages/Settings";
+import { UpdateModal } from "./components/Update";
 
 // 3D-перегляд скінів (three.js) — найважча частина; вантажиться лише на сторінці акаунтів.
 const Accounts = lazy(() => import("./pages/Accounts").then((m) => ({ default: m.Accounts })));
+const Skins = lazy(() => import("./pages/Skins").then((m) => ({ default: m.Skins })));
 
 function Page() {
   const route = useStore((s) => s.route);
@@ -30,6 +32,12 @@ function Page() {
           <Accounts />
         </Suspense>
       );
+    case "skins":
+      return (
+        <Suspense fallback={<Splash />}>
+          <Skins key={route.accountId ?? ""} initialAccount={route.accountId} />
+        </Suspense>
+      );
     case "settings":
       return <Settings />;
   }
@@ -40,6 +48,7 @@ export function App() {
   const lang = useStore((s) => s.settings?.language);
   const newInstance = useStore((s) => s.newInstanceOpen);
   const addAccount = useStore((s) => s.addAccountOpen);
+  const updateOpen = useStore((s) => s.updateOpen);
   return (
     <div className="app" key={lang}>
       <TitleBar />
@@ -47,6 +56,7 @@ export function App() {
       <main className="main">{ready ? <Page /> : <Splash />}</main>
       {newInstance && <NewInstanceModal />}
       {addAccount && <AddAccount onClose={() => setState({ addAccountOpen: false })} />}
+      {updateOpen && <UpdateModal />}
       <CrashDialog />
       <ConfirmHost />
       <DropHandler />

@@ -7,6 +7,7 @@ import { t } from "../lib/i18n";
 import { fail, saveSettings, useStore } from "../lib/store";
 import { Logo } from "../components/Shell";
 import { Seg, Slider, Switch } from "../components/ui";
+import { UpdateRow } from "../components/Update";
 
 export function Settings() {
   const s = useStore((x) => x.settings);
@@ -205,50 +206,40 @@ function SettingsBody({ s, total, dataDir, version }: { s: S; total: number; dat
         </section>
 
         <section className="card pad set-card">
-          <h3>{t("set.ms")}</h3>
-          <p className="hint">{t("set.ms_hint")}</p>
-          <div className="field">
-            <label>{t("set.ms_client_id")}</label>
-            <input
-              className="input mono"
-              style={{ fontSize: 12.5 }}
-              value={clientId}
-              placeholder="00000000-0000-0000-0000-000000000000"
-              onChange={(e) => setClientId(e.target.value.trim())}
-              onBlur={() => clientId !== s.msClientId && saveSettings({ msClientId: clientId })}
-            />
-          </div>
-          <details className="howto">
-            <summary>{t("set.ms_help")}</summary>
-            <ol>
-              <li>
-                portal.azure.com → App registrations → New registration: «Personal Microsoft accounts only».
-              </li>
-              <li>Authentication → Add a platform → Mobile and desktop → redirect URI <code>https://login.microsoftonline.com/common/oauth2/nativeclient</code>; Allow public client flows — Yes.</li>
-              <li>
-                {t("set.ms_step_approve")}{" "}
-                <a
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    api.openUrl("https://aka.ms/mce-reviewappid").catch(fail);
-                  }}
-                >
-                  aka.ms/mce-reviewappid
-                </a>
-              </li>
-              <li>{t("set.ms_step_paste")}</li>
-            </ol>
-          </details>
-
-          <div className="about">
+          <div className="about" style={{ marginTop: 0, paddingTop: 0, borderTop: 0 }}>
             <Logo size={46} />
-            <div>
+            <div className="grow">
               <h2>ЛІЯ</h2>
               <p className="faint">{t("set.version", { v: version })}</p>
             </div>
           </div>
+          <UpdateRow />
           <p className="hint">{t("set.about_text")}</p>
+
+          <details className="howto dev">
+            <summary>{t("set.dev")}</summary>
+            <p className="hint">{t("set.ms_hint")}</p>
+            <div className="field">
+              <label>{t("set.ms_client_id")}</label>
+              <input
+                className="input mono"
+                style={{ fontSize: 12.5 }}
+                value={clientId}
+                placeholder="00000000-0000-0000-0000-000000000000"
+                onChange={(e) => setClientId(e.target.value.trim())}
+                onBlur={() => clientId !== s.msClientId && saveSettings({ msClientId: clientId })}
+              />
+            </div>
+            <div className="row">
+              <button className="btn sm ghost" onClick={() => api.openUrl("https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade").catch(fail)}>
+                Azure Portal
+              </button>
+              <button className="btn sm ghost" onClick={() => api.openUrl("https://aka.ms/mce-reviewappid").catch(fail)}>
+                {t("set.ms_form")}
+              </button>
+            </div>
+            <p className="hint">{t("set.ms_docs")}</p>
+          </details>
         </section>
       </div>
     </div>

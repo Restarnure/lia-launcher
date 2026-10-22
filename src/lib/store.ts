@@ -14,6 +14,7 @@ import {
   type TaskEvent,
 } from "./api";
 import { errText, setLang, t } from "./i18n";
+import type { UpdateState } from "./updater";
 
 export type InstanceTab = "mods" | "resourcepacks" | "shaderpacks" | "worlds" | "screenshots" | "console" | "settings";
 
@@ -23,6 +24,7 @@ export type Route =
   | { page: "instance"; id: string; tab?: InstanceTab }
   | { page: "browse"; type?: ProjectType; instanceId?: string | null }
   | { page: "accounts" }
+  | { page: "skins"; accountId?: string }
   | { page: "settings" };
 
 export interface Toast {
@@ -47,6 +49,8 @@ interface State {
   toasts: Toast[];
   newInstanceOpen: boolean;
   addAccountOpen: boolean;
+  update: UpdateState;
+  updateOpen: boolean;
 }
 
 let state: State = {
@@ -64,6 +68,8 @@ let state: State = {
   toasts: [],
   newInstanceOpen: false,
   addAccountOpen: false,
+  update: { status: "idle" },
+  updateOpen: false,
 };
 
 const listeners = new Set<() => void>();
@@ -105,6 +111,8 @@ export function back() {
 let toastId = 1;
 
 export function toast(kind: Toast["kind"], title: string, text?: string) {
+  // Те саме повідомлення, що вже на екрані, не дублюємо.
+  if (state.toasts.some((x) => x.kind === kind && x.title === title && x.text === text)) return;
   const id = toastId++;
   setState((s) => ({ toasts: [...s.toasts.slice(-3), { id, kind, title, text }] }));
   setTimeout(() => dismissToast(id), kind === "error" ? 9000 : 4500);
@@ -155,6 +163,7 @@ export async function saveSettings(patch: Partial<Settings>) {
     const s = await api.settingsSet({ ...cur, ...patch });
     if (s.language !== cur.language) setLang(s.language);
     setState({ settings: s, info: state.info ? { ...state.info } : null });
+    if (patch.msClientId !== undefined) refreshAccounts();
     if (patch.dataDir !== undefined) {
       setState({ info: await api.appInfo() });
       refreshInstances();

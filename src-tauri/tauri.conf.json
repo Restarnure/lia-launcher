@@ -24,7 +24,8 @@
         "decorations": false,
         "visible": false,
         "backgroundColor": "#0A0E16",
-        "dragDropEnabled": true
+        "dragDropEnabled": true,
+        "create": false
       }
     ],
     "security": {
@@ -37,7 +38,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "publisher": "ЛІЯ",
     "shortDescription": "Лаунчер Minecraft",
     "longDescription": "ЛІЯ — швидкий український лаунчер Minecraft: збірки, моди з Modrinth, Fabric/Quilt/Forge/NeoForge, автоматична Java.",
@@ -51,10 +54,25 @@
     ],
     "windows": {
       "nsis": {
-        "languages": ["Ukrainian", "English"],
+        "languages": [
+          "Ukrainian",
+          "English"
+        ],
         "displayLanguageSelector": false,
         "installMode": "currentUser",
         "installerIcon": "icons/icon.ico"
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYxNEM2NDYzQjk5MzNFRUUKUldUdVBwTzVZMlJNWVVlVHREOTVFeG1ESzhaSStJU1kvZWNwUHo2UUxybnRKUHlhVEhSR3NBazEK",
+      "endpoints": [
+        "https://github.com/Restarnure/lia-launcher/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

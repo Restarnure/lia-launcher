@@ -4,11 +4,12 @@ use crate::util;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Client ID застосунку Azure для входу Microsoft. Порожній = вхід Microsoft вимкнено,
-/// доки не вказано свій ID у налаштуваннях (ID має бути схвалений Mojang).
+/// Client ID застосунку Azure для входу Microsoft, вшитий у збірку (схвалений Mojang).
+/// Задається змінною LIA_MS_CLIENT_ID під час збірки або тут, у BUILT_IN.
+const BUILT_IN: &str = "";
 pub const DEFAULT_MS_CLIENT_ID: &str = match option_env!("LIA_MS_CLIENT_ID") {
     Some(id) => id,
-    None => "",
+    None => BUILT_IN,
 };
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -46,7 +47,7 @@ impl Default for Settings {
             fullscreen: false,
             on_launch: "minimize".into(),
             concurrency: 16,
-            ms_client_id: DEFAULT_MS_CLIENT_ID.into(),
+            ms_client_id: String::new(),
             selected_account: None,
             last_instance: None,
             show_featured: true,
@@ -99,6 +100,15 @@ impl Settings {
         self.data_dir = self.data_dir.take().filter(|d| !d.trim().is_empty());
         self.java_path = self.java_path.take().filter(|d| !d.trim().is_empty());
         self.ms_client_id = self.ms_client_id.trim().to_string();
+    }
+
+    /// Client ID для входу: свій із налаштувань (для розробки) або вшитий у збірку.
+    pub fn client_id(&self) -> String {
+        if self.ms_client_id.is_empty() {
+            DEFAULT_MS_CLIENT_ID.to_string()
+        } else {
+            self.ms_client_id.clone()
+        }
     }
 
     pub fn data_root(&self) -> PathBuf {

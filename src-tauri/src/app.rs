@@ -9,7 +9,7 @@ use crate::logparse::LogLine;
 use crate::mojang::{self, install, java};
 use crate::paths::Paths;
 use crate::settings::{self, Settings};
-use crate::{loaders, modrinth, news, servers, skins, tasks, util};
+use crate::{loaders, modrinth, news, servers, skinlib, skins, tasks, util};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -24,14 +24,20 @@ pub struct AppState {
     pub accounts: tokio::sync::Mutex<Vec<Account>>,
     pub app: AppHandle,
     preparing: Mutex<HashSet<String>>,
+    /// Аргументи WebView2 на весь сеанс: усі вікна мусять мати однакові (одне середовище).
+    pub browser_args: String,
 }
 
 type S<'a> = State<'a, Arc<AppState>>;
 
 impl AppState {
     pub fn new(app: AppHandle) -> AppState {
+        let settings = Settings::load();
+        let lang = if settings.language == "en" { "en-US" } else { "uk" };
         AppState {
-            settings: RwLock::new(Settings::load()),
+            // Перші три — типові прапорці Tauri; --lang задає мову веб-сторінок (вхід Microsoft).
+            browser_args: format!("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --lang={lang}"),
+            settings: RwLock::new(settings),
             http: crate::net::client(),
             accounts: tokio::sync::Mutex::new(accounts::load()),
             app,
@@ -95,7 +101,8 @@ pub fn startup(state: &AppState) {
 pub async fn app_info(state: S<'_>) -> Result<Value> {
     let ctx = state.ctx();
     Ok(json!({
-        "version": env!("CARGO_PKG_VERSION"),
+        // Версія з tauri.conf.json — саме її порівнює автооновлення.
+        "version": state.app.package_info().version.to_string(),
         "dataDir": ctx.paths.root,
         "configDir": Paths::config_home(),
         "totalMemoryMb": settings::total_memory_mb(),
@@ -395,7 +402,7 @@ async fn selected_account(state: &AppState) -> Result<Account> {
         .position(|a| Some(&a.id) == sel.as_ref())
         .or(if list.is_empty() { None } else { Some(0) })
         .ok_or_else(|| err("no_account", "додайте акаунт, щоб грати"))?;
-    let client_id = state.settings().ms_client_id;
+    let client_id = state.settings().client_id();
     let acc = &mut list[idx];
     match accounts::ensure_fresh(&state.http, &client_id, acc).await {
         Ok(true) => accounts::save(&list)?,
@@ -781,7 +788,7 @@ pub async fn accounts_list(state: S<'_>) -> Result<Value> {
     let list: Vec<AccountView> = state.accounts.lock().await.iter().map(Account::view).collect();
     let sel = state.settings().selected_account;
     let selected = list.iter().find(|a| Some(&a.id) == sel.as_ref()).or(list.first()).map(|a| a.id.clone());
-    Ok(json!({ "accounts": list, "selected": selected, "msAvailable": !state.settings().ms_client_id.is_empty() }))
+    Ok(json!({ "accounts": list, "selected": selected, "msAvailable": !state.settings().client_id().is_empty() }))
 }
 
 async fn upsert(state: &AppState, acc: Account) -> Result<AccountView> {
@@ -823,11 +830,11 @@ pub async fn account_remove(state: S<'_>, id: String) -> Result<()> {
 /// Вхід Microsoft у вікні з офіційною сторінкою входу. Код перехоплюється з переадресації.
 #[tauri::command]
 pub async fn account_login_ms(state: S<'_>) -> Result<AccountView> {
-    let client_id = state.settings().ms_client_id;
+    let client_id = state.settings().client_id();
     if client_id.is_empty() {
         return Err(err("ms_no_client_id", "не вказано Client ID застосунку Azure"));
     }
-    let pkce = accounts::authorize_url(&client_id);
+    let pkce = accounts::authorize_url(&client_id, &state.settings().language);
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<String>>();
     let tx = Arc::new(Mutex::new(Some(tx)));
     let send = {
@@ -843,11 +850,21 @@ pub async fn account_login_ms(state: S<'_>) -> Result<AccountView> {
     }
     let url: url::Url = pkce.url.parse().map_err(|_| err("invalid", "URL входу"))?;
     let nav_send = send.clone();
-    let win = WebviewWindowBuilder::new(&state.app, "ms-login", WebviewUrl::External(url))
-        .title("Microsoft")
+    let mut builder = WebviewWindowBuilder::new(&state.app, "ms-login", WebviewUrl::External(url))
+        .title("Вхід Microsoft — ЛІЯ")
         .inner_size(520.0, 700.0)
         .resizable(false)
         .center()
+        .focused(true);
+    #[cfg(windows)]
+    {
+        builder = builder.additional_browser_args(&state.browser_args);
+    }
+    // Вікно входу тримається над лаунчером, а не губиться за ним.
+    if let Some(main) = state.app.get_webview_window("main") {
+        builder = builder.parent(&main).map_err(|e| err("window", e.to_string()))?;
+    }
+    let win = builder
         .on_navigation(move |u| {
             if u.as_str().starts_with(accounts::MS_REDIRECT) {
                 let q: HashMap<String, String> = u.query_pairs().map(|(k, v)| (k.to_string(), v.to_string())).collect();
@@ -868,14 +885,20 @@ pub async fn account_login_ms(state: S<'_>) -> Result<AccountView> {
             close_send(Err(Error::Cancelled));
         }
     });
-    let code = rx.await.map_err(|_| Error::Cancelled)?;
+    let code = match tokio::time::timeout(std::time::Duration::from_secs(600), rx).await {
+        Ok(r) => r.map_err(|_| Error::Cancelled)?,
+        Err(_) => {
+            let _ = win.close();
+            return Err(Error::Cancelled);
+        }
+    };
     let _ = win.close();
     let acc = accounts::login_with_code(&state.http, &client_id, &code?, &pkce.verifier).await?;
     upsert(&state, acc).await
 }
 
 async fn ms_token(state: &AppState, id: &str) -> Result<String> {
-    let client_id = state.settings().ms_client_id;
+    let client_id = state.settings().client_id();
     let mut list = state.accounts.lock().await;
     let acc = list.iter_mut().find(|a| a.id == id).ok_or_else(|| err("no_account", "акаунт не знайдено"))?;
     if accounts::ensure_fresh(&state.http, &client_id, acc).await? {
@@ -905,6 +928,7 @@ pub async fn account_skin(state: S<'_>, id: String) -> Result<Value> {
         }
         return Ok(json!({
             "skin": skin_url,
+            "url": skin.map(|s| s.url.clone()),
             "slim": skin.and_then(|s| s.variant.as_deref()).is_some_and(|v| v.eq_ignore_ascii_case("slim")),
             "capes": capes,
             "source": "microsoft",
@@ -921,19 +945,80 @@ pub async fn account_skin(state: S<'_>, id: String) -> Result<Value> {
 }
 
 #[tauri::command]
-pub async fn skin_upload(state: S<'_>, id: String, path: String, slim: bool) -> Result<()> {
-    let bytes = std::fs::read(&path)?;
-    if !bytes.starts_with(b"\x89PNG") || bytes.len() > 1024 * 1024 {
-        return Err(err("invalid_skin", "скін має бути файлом PNG до 1 МБ"));
-    }
-    let token = ms_token(&state, &id).await?;
-    accounts::upload_skin(&state.http, &token, bytes, slim).await
-}
-
-#[tauri::command]
 pub async fn cape_set(state: S<'_>, id: String, cape_id: Option<String>) -> Result<()> {
     let token = ms_token(&state, &id).await?;
     accounts::set_cape(&state.http, &token, cape_id.as_deref()).await
+}
+
+// ---------------------------------------------------------------- скіни
+
+#[tauri::command]
+pub async fn skins_list(state: S<'_>) -> Result<Value> {
+    let paths = state.ctx().paths;
+    let (skins, defaults) = tokio::task::spawn_blocking(move || (skinlib::list(), skinlib::defaults(&paths))).await.map_err(|e| err("io", e.to_string()))?;
+    Ok(json!({ "skins": skins, "defaults": defaults, "applied": skinlib::applied() }))
+}
+
+#[tauri::command]
+pub async fn skin_add_file(path: String) -> Result<skinlib::SkinView> {
+    let p = PathBuf::from(&path);
+    let bytes = std::fs::read(&p)?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(err("invalid_skin", "файл завеликий для скіна"));
+    }
+    let name = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    skinlib::add(&bytes, &name, None, "file")
+}
+
+#[tauri::command]
+pub async fn skin_add_nick(state: S<'_>, nick: String) -> Result<skinlib::SkinView> {
+    let nick = accounts::validate_nick(&nick)?;
+    let (url, slim) = accounts::skin_by_name(&state.http, &nick).await?.ok_or_else(|| err("skin_not_found", format!("у Mojang немає гравця {nick}")))?;
+    let bytes = crate::net::get_bytes(&state.http, &url).await?;
+    skinlib::add(&bytes, &nick, Some(slim), &format!("nick:{nick}"))
+}
+
+/// Зберегти поточний скін акаунта в бібліотеку (щоб можна було до нього повернутись).
+#[tauri::command]
+pub async fn skin_save_current(state: S<'_>, id: String) -> Result<skinlib::SkinView> {
+    let info = account_skin(state.clone(), id.clone()).await?;
+    let data = info["skin"].as_str().ok_or_else(|| err("skin_not_found", "у акаунта немає скіна"))?;
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data.trim_start_matches("data:image/png;base64,")).map_err(|e| err("invalid_skin", e.to_string()))?;
+    let name = state.accounts.lock().await.iter().find(|a| a.id == id).map(|a| a.name.clone()).unwrap_or_default();
+    let view = skinlib::add(&bytes, &name, info["slim"].as_bool(), "account")?;
+    if let Some(url) = info["url"].as_str() {
+        skinlib::set_applied(&id, &view.skin.id, url)?;
+    }
+    Ok(view)
+}
+
+#[tauri::command]
+pub async fn skin_update(id: String, name: Option<String>, slim: Option<bool>) -> Result<()> {
+    skinlib::update(&id, name, slim)
+}
+
+#[tauri::command]
+pub async fn skin_remove(id: String) -> Result<()> {
+    skinlib::remove(&id)
+}
+
+/// Застосувати скін з бібліотеки (або стандартний) до акаунта Microsoft.
+#[tauri::command]
+pub async fn skin_apply(state: S<'_>, account_id: String, skin_id: String, slim: bool) -> Result<()> {
+    let bytes = if skin_id.starts_with("default:") {
+        let paths = state.ctx().paths;
+        let sid = skin_id.clone();
+        tokio::task::spawn_blocking(move || skinlib::default_bytes(&paths, &sid)).await.map_err(|e| err("io", e.to_string()))??
+    } else {
+        skinlib::bytes_of(&skin_id)?
+    };
+    let token = ms_token(&state, &account_id).await?;
+    let profile = accounts::upload_skin(&state.http, &token, bytes, slim).await?;
+    if let Some(active) = profile.skins.iter().find(|s| s.state == "ACTIVE") {
+        skinlib::set_applied(&account_id, &skin_id, &active.url)?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------- перехід з інших лаунчерів

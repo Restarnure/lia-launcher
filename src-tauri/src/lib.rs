@@ -16,6 +16,7 @@ pub mod news;
 pub mod paths;
 pub mod servers;
 pub mod settings;
+pub mod skinlib;
 pub mod skins;
 pub mod tasks;
 pub mod util;
@@ -39,12 +40,20 @@ pub fn run() {
                 .with_denylist(&["ms-login"])
                 .build(),
         )
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let state = Arc::new(app::AppState::new(app.handle().clone()));
             app::startup(&state);
             state.allow_assets();
+            // Головне вікно — з коду: мова WebView2 (і сторінок Microsoft) = мова лаунчера.
+            let conf = app.config().app.windows.iter().find(|w| w.label == "main").cloned().expect("main window config");
+            let builder = tauri::WebviewWindowBuilder::from_config(app.handle(), &conf)?;
+            #[cfg(windows)]
+            let builder = builder.additional_browser_args(&state.browser_args);
+            builder.build()?;
             app.manage(state);
             Ok(())
         })
@@ -97,8 +106,14 @@ pub fn run() {
             app::account_remove,
             app::account_login_ms,
             app::account_skin,
-            app::skin_upload,
             app::cape_set,
+            app::skins_list,
+            app::skin_add_file,
+            app::skin_add_nick,
+            app::skin_save_current,
+            app::skin_update,
+            app::skin_remove,
+            app::skin_apply,
             app::mcdir_scan,
             app::mcdir_import,
             app::news_list,

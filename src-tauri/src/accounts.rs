@@ -111,7 +111,8 @@ pub struct Pkce {
     pub url: String,
 }
 
-pub fn authorize_url(client_id: &str) -> Pkce {
+/// `lang` — мова сторінки входу Microsoft ("uk" | "en"), інакше вона береться з мови Windows.
+pub fn authorize_url(client_id: &str, lang: &str) -> Pkce {
     use rand::RngExt;
     const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
     let mut rng = rand::rng();
@@ -125,7 +126,9 @@ pub fn authorize_url(client_id: &str) -> Pkce {
         .append_pair("scope", SCOPE)
         .append_pair("prompt", "select_account")
         .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256");
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("ui_locales", if lang == "en" { "en-US" } else { "uk-UA" })
+        .append_pair("mkt", if lang == "en" { "en-US" } else { "uk-UA" });
     Pkce { verifier, url: url.to_string() }
 }
 
@@ -299,16 +302,23 @@ pub async fn ensure_fresh(http: &reqwest::Client, client_id: &str, acc: &mut Acc
     Ok(true)
 }
 
-pub async fn upload_skin(http: &reqwest::Client, mc_token: &str, png: Vec<u8>, slim: bool) -> Result<()> {
+/// Завантажує скін на акаунт. Повертає оновлений профіль (з новою адресою текстури).
+pub async fn upload_skin(http: &reqwest::Client, mc_token: &str, png: Vec<u8>, slim: bool) -> Result<Profile> {
     let part = reqwest::multipart::Part::bytes(png).file_name("skin.png").mime_str("image/png")?;
     let form = reqwest::multipart::Form::new().text("variant", if slim { "slim" } else { "classic" }).part("file", part);
     let resp = http.post("https://api.minecraftservices.com/minecraft/profile/skins").bearer_auth(mc_token).multipart(form).send().await?;
+    let s = resp.status().as_u16();
+    if s == 429 {
+        return Err(err("skin_rate", "забагато змін скіна поспіль — спробуйте за хвилину"));
+    }
     if !resp.status().is_success() {
-        let s = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
         return Err(err("skin_upload", format!("HTTP {s}: {}", body.chars().take(200).collect::<String>())));
     }
-    Ok(())
+    match resp.json::<Profile>().await {
+        Ok(p) if !p.skins.is_empty() => Ok(p),
+        _ => profile(http, mc_token).await,
+    }
 }
 
 pub async fn set_cape(http: &reqwest::Client, mc_token: &str, cape_id: Option<&str>) -> Result<()> {
@@ -362,10 +372,11 @@ mod tests {
 
     #[test]
     fn pkce_url() {
-        let p = authorize_url("abc");
+        let p = authorize_url("abc", "uk");
         assert_eq!(p.verifier.len(), 64);
         assert!(p.url.contains("client_id=abc"));
         assert!(p.url.contains("code_challenge_method=S256"));
         assert!(p.url.contains("nativeclient"));
+        assert!(p.url.contains("ui_locales=uk-UA"));
     }
 }
