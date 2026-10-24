@@ -655,7 +655,8 @@
 .modal {
   position: relative;
   width: min(520px, 100%);
-  max-height: 100%;
+  /* висота екрана без рамки вікна (42) і відступів оверлею (2×24): % тут не працює — рядок сітки має висоту вмісту */
+  max-height: calc(100vh - 90px);
   display: flex;
   flex-direction: column;
   border-radius: var(--r-xl);
@@ -694,6 +695,8 @@
 .modal-body {
   padding: 16px 22px;
   overflow-y: auto;
+  /* без цього flex-елемент не стискається нижче вмісту, і прокрутки немає */
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 16px;

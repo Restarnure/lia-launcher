@@ -117,7 +117,6 @@ pub fn run() {
             app::mcdir_scan,
             app::mcdir_import,
             app::news_list,
-            app::news_body,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

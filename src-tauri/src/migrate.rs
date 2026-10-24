@@ -1,5 +1,5 @@
-//! Перенесення з інших лаунчерів: світи, ресурспаки, налаштування й сервери
-//! з теки `.minecraft` у нову збірку ЛІЇ.
+//! Перенесення з інших лаунчерів: світи, ресурспаки, моди з їхніми налаштуваннями, налаштування гри й сервери
+//! з теки гри (`.minecraft` або тека збірки іншого лаунчера) у нову збірку ЛІЇ.
 use crate::error::{err, Context, Result};
 use crate::tasks::Task;
 use crate::util;
@@ -73,6 +73,34 @@ struct Profile {
     last_version_id: Option<String>,
     #[serde(default)]
     last_used: Option<String>,
+    /// Окрема тека гри профілю: так TLauncher тримає свої модпаки (`versions/<збірка>`).
+    #[serde(default)]
+    game_dir: Option<String>,
+}
+
+/// Налаштування модів і дані, які моди пишуть поруч із `mods` (мапи, вейпоінти, скрипти).
+const MOD_DIRS: [&str; 7] = ["config", "defaultconfigs", "kubejs", "journeymap", "XaeroWaypoints", "XaeroWorldMap", "schematics"];
+
+/// Ознаки теки гри.
+fn is_game_dir(dir: &Path) -> bool {
+    ["saves", "mods", "config", "versions", "resourcepacks", "options.txt"].iter().any(|m| dir.join(m).exists())
+}
+
+/// Справжня тека гри за вказаною: Prism/MultiMC кладуть її в `.minecraft`/`minecraft` всередині збірки,
+/// а останній профіль офіційного лаунчера чи TLauncher може мати власну `gameDir`.
+fn resolve(dir: PathBuf) -> PathBuf {
+    if !is_game_dir(&dir) {
+        if let Some(sub) = [".minecraft", "minecraft"].iter().map(|n| dir.join(n)).find(|d| is_game_dir(d)) {
+            return sub;
+        }
+    }
+    let profile_dir = util::read_json::<Profiles>(&dir.join("launcher_profiles.json"))
+        .ok()
+        .and_then(|p| p.profiles.into_values().filter(|x| x.last_version_id.is_some()).max_by(|a, b| a.last_used.cmp(&b.last_used)))
+        .and_then(|p| p.game_dir)
+        .map(PathBuf::from)
+        .filter(|d| d.is_dir() && is_game_dir(d));
+    profile_dir.unwrap_or(dir)
 }
 
 fn last_version(dir: &Path) -> Option<(String, String)> {
@@ -87,7 +115,8 @@ fn last_version(dir: &Path) -> Option<(String, String)> {
 }
 
 pub fn scan(path: Option<&str>) -> Scan {
-    let dir = path.map(PathBuf::from).unwrap_or_else(default_dir);
+    let root = path.map(PathBuf::from).unwrap_or_else(default_dir);
+    let dir = resolve(root.clone());
     let mut saves: Vec<SaveInfo> = std::fs::read_dir(dir.join("saves"))
         .into_iter()
         .flatten()
@@ -97,13 +126,14 @@ pub fn scan(path: Option<&str>) -> Scan {
         .collect();
     saves.sort_by_key(|s| s.folder.to_lowercase());
     Scan {
-        exists: dir.join("saves").exists() || dir.join("versions").exists(),
+        exists: is_game_dir(&dir),
         resourcepacks: count(&dir.join("resourcepacks")),
         shaderpacks: count(&dir.join("shaderpacks")),
         mods: count(&dir.join("mods")),
         has_options: dir.join("options.txt").exists(),
         has_servers: dir.join("servers.dat").exists(),
-        last_version: last_version(&dir),
+        // Профілі лежать у корені, навіть коли тека гри збірки окрема.
+        last_version: last_version(&dir).or_else(|| last_version(&root)),
         path: dir.display().to_string(),
         saves,
     }
@@ -131,7 +161,9 @@ pub fn copy_into(src: &Path, dest: &Path, what: &What, task: &Task) -> Result<()
             jobs.push((from, dest.join("saves").join(s)));
         }
     }
-    for (on, name) in [(what.resourcepacks, "resourcepacks"), (what.shaderpacks, "shaderpacks"), (what.mods, "mods")] {
+    let mut dirs: Vec<(bool, &str)> = vec![(what.resourcepacks, "resourcepacks"), (what.shaderpacks, "shaderpacks"), (what.mods, "mods")];
+    dirs.extend(MOD_DIRS.iter().map(|d| (what.mods, *d)));
+    for (on, name) in dirs {
         if on && src.join(name).is_dir() {
             jobs.push((src.join(name), dest.join(name)));
         }
@@ -172,5 +204,29 @@ mod tests {
         assert_eq!(p("1.12.2-OptiFine_HD_U_G5"), Some(("1.12.2".into(), "vanilla".into())));
         assert_eq!(p("26.3"), Some(("26.3".into(), "vanilla".into())));
         assert_eq!(p("ForgeOptiFine 1.16.5"), Some(("1.16.5".into(), "forge".into())));
+    }
+
+    #[test]
+    fn mods_come_with_configs() {
+        let root = std::env::temp_dir().join(format!("lia-mig-{}", std::process::id()));
+        let src = root.join("Prism").join("minecraft");
+        for f in ["mods/a.jar", "config/a.toml", "config/sub/b.json5", "defaultconfigs/c.toml"] {
+            let p = src.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        }
+        // Prism: вказують теку збірки, а гра лежить у minecraft/ всередині.
+        let scan = super::scan(Some(root.join("Prism").to_str().unwrap()));
+        assert!(scan.exists && scan.mods == 1);
+        assert_eq!(std::path::PathBuf::from(&scan.path), src);
+
+        let dest = root.join("dest");
+        let task = crate::tasks::Task::new(std::sync::Arc::new(|_: &str, _| {}), "test", None);
+        let what = super::What { saves: vec![], resourcepacks: false, shaderpacks: false, mods: true, options: false };
+        super::copy_into(&src, &dest, &what, &task).unwrap();
+        for f in ["mods/a.jar", "config/a.toml", "config/sub/b.json5", "defaultconfigs/c.toml"] {
+            assert!(dest.join(f).is_file(), "{f}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -230,11 +230,15 @@ function kindFor(file: string, tab?: string): ContentKind | "mrpack" | null {
   return null;
 }
 
+// Бібліотека скінів має сенс лише з акаунтом Microsoft: офлайн-акаунту скін не поставити.
+const hasMicrosoft = (s: ReturnType<typeof getState>) => s.accounts.accounts.some((a) => a.kind === "microsoft");
+
 export function DropHandler() {
   const [hover, setHover] = useState<string[] | null>(null);
   const route = useStore((s) => s.route);
   const instances = useStore((s) => s.instances);
   const inst = route.page === "instance" ? instances.find((i) => i.id === route.id) : undefined;
+  const ms = useStore(hasMicrosoft);
 
   useEffect(() => {
     let un: (() => void) | undefined;
@@ -258,7 +262,7 @@ export function DropHandler() {
             }
           }
           const pngs = p.paths.filter((x) => x.toLowerCase().endsWith(".png"));
-          if (r.page === "skins" && pngs.length) {
+          if (r.page === "skins" && pngs.length && hasMicrosoft(getState())) {
             let n = 0;
             for (const f of pngs) await api.skinAddFile(f).then(() => n++, fail);
             if (n) toast("success", t("skins.added", { n }));
@@ -287,10 +291,10 @@ export function DropHandler() {
   const message = useMemo(() => {
     if (!hover) return null;
     if (hover.some((p) => p.toLowerCase().endsWith(".mrpack"))) return t("drop.mrpack");
-    if (route.page === "skins" && hover.some((p) => p.toLowerCase().endsWith(".png"))) return t("drop.skins");
+    if (route.page === "skins" && ms && hover.some((p) => p.toLowerCase().endsWith(".png"))) return t("drop.skins");
     if (inst) return t("drop.mods", { name: inst.name });
     return t("drop.nowhere");
-  }, [hover, inst, route.page]);
+  }, [hover, inst, route.page, ms]);
 
   if (!message) return null;
   return (

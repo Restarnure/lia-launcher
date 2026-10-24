@@ -357,5 +357,4 @@ export const api = {
     invoke<Instance>("mcdir_import", { path, spec, what }),
 
   news: () => invoke<NewsEntry[]>("news_list"),
-  newsBody: (path: string) => invoke<string>("news_body", { path }),
 };

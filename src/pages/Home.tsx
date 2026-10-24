@@ -1,14 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import DOMPurify from "dompurify";
 import { ArrowRight, Copy, ExternalLink, Globe, Play, Plus, Server, Users } from "lucide-react";
 import { api, type Featured, type NewsEntry, type ServerStatus } from "../lib/api";
-import { date } from "../lib/format";
 import { getLang, t } from "../lib/i18n";
 import { McText } from "../lib/mctext";
 import { fail, navigate, saveSettings, setState, toast, useInstanceTask, useStore } from "../lib/store";
 import { InstanceCard } from "../components/InstanceCard";
-import { Empty, InstanceIcon, LoaderBadge, Modal, PlayButton, Select, stageLabel } from "../components/ui";
+import { Empty, InstanceIcon, PlayButton, Select, stageLabel } from "../components/ui";
 
+// Нотатки до оновлень потрібні лише для шапки: остання версія і її картинка.
 let newsCache: NewsEntry[] | null = null;
 
 export function Home() {
@@ -17,8 +16,6 @@ export function Home() {
   const accounts = useStore((s) => s.accounts);
   const me = accounts.accounts.find((a) => a.id === accounts.selected);
   const [news, setNews] = useState<NewsEntry[] | null>(newsCache);
-  const [newsFailed, setNewsFailed] = useState(false);
-  const [openNews, setOpenNews] = useState<NewsEntry | null>(null);
 
   useEffect(() => {
     if (newsCache) return;
@@ -28,7 +25,7 @@ export function Home() {
         newsCache = n;
         setNews(n);
       })
-      .catch(() => setNewsFailed(true));
+      .catch(() => {});
   }, []);
 
   const current = instances.find((i) => i.id === settings?.lastInstance) ?? instances[0];
@@ -108,64 +105,7 @@ export function Home() {
         </div>
       )}
 
-      <div className="section-title">
-        <h2>{t("home.news")}</h2>
-      </div>
-      {newsFailed && !news && <p className="faint">{t("home.news_failed")}</p>}
-      <div className="news-grid">
-        {!news && !newsFailed && [0, 1, 2].map((i) => <div key={i} className="skeleton" style={{ height: 230 }} />)}
-        {news?.slice(0, 9).map((n) => (
-          <button key={n.id} className="news-card" onClick={() => setOpenNews(n)}>
-            <div className="news-img" style={{ backgroundImage: n.image ? `url("${n.image}")` : undefined }} />
-            <div className="news-body">
-              <div className="row">
-                <span className={`badge ${n.kind === "release" ? "green" : "blue"}`}>{n.version}</span>
-                <span className="faint" style={{ fontSize: 12 }}>
-                  {date(n.date)}
-                </span>
-              </div>
-              <b>{n.title}</b>
-            </div>
-          </button>
-        ))}
-      </div>
-      {openNews && <NewsModal entry={openNews} onClose={() => setOpenNews(null)} />}
     </div>
-  );
-}
-
-function NewsModal({ entry, onClose }: { entry: NewsEntry; onClose: () => void }) {
-  const [html, setHtml] = useState<string | null>(null);
-  useEffect(() => {
-    api
-      .newsBody(entry.contentPath)
-      .then((h) => setHtml(DOMPurify.sanitize(h, { FORBID_TAGS: ["style", "iframe", "form"], FORBID_ATTR: ["style"] })))
-      .catch((e) => {
-        fail(e);
-        onClose();
-      });
-  }, [entry, onClose]);
-  return (
-    <Modal title={entry.title} onClose={onClose} size="wide">
-      {entry.image && <img src={entry.image} alt="" className="news-hero" />}
-      {html === null ? (
-        <div className="row" style={{ justifyContent: "center", padding: 30 }}>
-          <div className="spinner" />
-        </div>
-      ) : (
-        <div
-          className="prose selectable"
-          dangerouslySetInnerHTML={{ __html: html }}
-          onClick={(e) => {
-            const a = (e.target as HTMLElement).closest("a");
-            if (a?.href) {
-              e.preventDefault();
-              api.openUrl(a.href).catch(fail);
-            }
-          }}
-        />
-      )}
-    </Modal>
   );
 }
 
@@ -249,10 +189,7 @@ function FeaturedServer() {
               {t("featured.offline")}
             </span>
           )}
-          <span className="row" style={{ gap: 6 }}>
-            {t("featured.version", { v: f.mcVersion })}
-            {f.loader !== "vanilla" && <LoaderBadge loader={f.loader} />}
-          </span>
+          <span>{t("featured.version", { v: f.mcVersion })}</span>
           <button
             className="ip"
             title={t("featured.copy_ip")}

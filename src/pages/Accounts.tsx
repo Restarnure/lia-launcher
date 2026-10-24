@@ -147,10 +147,12 @@ function SkinPanel({ account }: { account: Account }) {
           {t("acc.walk")}
         </label>
         {!ms && <p className="hint">{info?.source === "mojang_name" ? t("acc.skin_by_name") : t("acc.skin_default")}</p>}
-        <button className="btn primary" style={{ alignSelf: "flex-start" }} onClick={() => navigate({ page: "skins", accountId: account.id })}>
-          <Shirt size={15} />
-          {t("acc.change_skin")}
-        </button>
+        {ms && (
+          <button className="btn primary" style={{ alignSelf: "flex-start" }} onClick={() => navigate({ page: "skins", accountId: account.id })}>
+            <Shirt size={15} />
+            {t("acc.change_skin")}
+          </button>
+        )}
       </div>
     </div>
   );

@@ -24,10 +24,12 @@ export function MigrateModal({ onClose }: { onClose: () => void }) {
       .then((s) => {
         setScan(s);
         setSaves(new Set(s.saves.map((x) => x.folder)));
+        // Моди беремо завжди, коли вони є: прапорець лишається вимкненим лише для ванільної збірки.
+        setOpts((o) => ({ ...o, mods: s.mods > 0 }));
         if (s.lastVersion) {
           const [mc, loader] = s.lastVersion;
           setSel({ mc, loader: loader as Loader, loaderVersion: null });
-          setOpts((o) => ({ ...o, mods: loader !== "vanilla" && s.mods > 0 }));
+
           setPickerKey((k) => k + 1);
         }
       })

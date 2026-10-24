@@ -172,6 +172,18 @@ fn nbt_str(out: &mut Vec<u8>, s: &str) {
     out.extend_from_slice(s.as_bytes());
 }
 
+/// Запис сервера в списку: тіло TAG_Compound без байта типу.
+fn server_entry(name: &str, ip: &str) -> Vec<u8> {
+    let mut b = Vec::new();
+    for (k, v) in [("name", name), ("ip", ip)] {
+        b.push(8);
+        nbt_str(&mut b, k);
+        nbt_str(&mut b, v);
+    }
+    b.push(0);
+    b
+}
+
 /// Список серверів гри (нестиснений NBT) з одним сервером.
 pub fn servers_dat(name: &str, ip: &str) -> Vec<u8> {
     let mut b = vec![10u8];
@@ -180,25 +192,47 @@ pub fn servers_dat(name: &str, ip: &str) -> Vec<u8> {
     nbt_str(&mut b, "servers");
     b.push(10);
     b.extend_from_slice(&1i32.to_be_bytes());
-    for (k, v) in [("name", name), ("ip", ip)] {
-        b.push(8);
-        nbt_str(&mut b, k);
-        nbt_str(&mut b, v);
-    }
-    b.push(0); // кінець запису сервера
+    b.extend(server_entry(name, ip));
     b.push(0); // кінець кореня
     b
 }
 
-/// Нова збірка отримує закріплений сервер у списку «Мультиплеєр», якщо списку ще немає.
+/// Додає сервер на початок наявного списку. Гра пише корінь з єдиним тегом «servers» першим,
+/// тож розбирати решту записів не треба. Незнайомий формат — None (файл не чіпаємо).
+fn prepend_server(dat: &[u8], name: &str, ip: &str) -> Option<Vec<u8>> {
+    if dat.len() < 19 || dat[..6] != [10, 0, 0, 9, 0, 7] || &dat[6..13] != b"servers" {
+        return None;
+    }
+    let count = i32::from_be_bytes(dat[14..18].try_into().ok()?);
+    // Порожній список гра пише з типом TAG_End.
+    if !(dat[13] == 10 || (dat[13] == 0 && count == 0)) {
+        return None;
+    }
+    let mut out = dat[..13].to_vec();
+    out.push(10);
+    out.extend_from_slice(&(count + 1).to_be_bytes());
+    out.extend(server_entry(name, ip));
+    out.extend_from_slice(&dat[18..]);
+    Some(out)
+}
+
+/// Закріплений сервер у списку «Мультиплеєр» збірки: створює список або дописує сервер, якщо його там немає.
 pub fn seed_servers(game_dir: &std::path::Path, f: &Featured) {
-    let path = game_dir.join("servers.dat");
-    if path.exists() || !f.name.is_ascii() {
+    if !f.name.is_ascii() {
         return;
     }
+    let path = game_dir.join("servers.dat");
     let ip = if f.port == 25565 { f.address.clone() } else { format!("{}:{}", f.address, f.port) };
+    let data = match std::fs::read(&path) {
+        Ok(dat) if dat.windows(f.address.len()).any(|w| w == f.address.as_bytes()) => return,
+        Ok(dat) => match prepend_server(&dat, &f.name, &ip) {
+            Some(d) => d,
+            None => return,
+        },
+        Err(_) => servers_dat(&f.name, &ip),
+    };
     let _ = std::fs::create_dir_all(game_dir);
-    let _ = std::fs::write(path, servers_dat(&f.name, &ip));
+    let _ = crate::util::write_atomic(&path, &data);
 }
 
 #[cfg(test)]
@@ -212,6 +246,18 @@ mod tests {
         assert_eq!(&b[13..18], &[10, 0, 0, 0, 1]);
         assert!(b.windows(12).any(|w| w == b"shotam.today"));
         assert_eq!(&b[b.len() - 2..], &[0, 0]);
+
+        // Дописування на початок: лічильник +1, старий запис і хвіст кореня на місці.
+        let two = super::prepend_server(&super::servers_dat("Old", "old.net"), "Shotam", "shotam.today").unwrap();
+        assert_eq!(&two[13..18], &[10, 0, 0, 0, 2]);
+        let shotam = two.windows(12).position(|w| w == b"shotam.today").unwrap();
+        let old = two.windows(7).position(|w| w == b"old.net").unwrap();
+        assert!(shotam < old);
+        assert_eq!(&two[two.len() - 2..], &[0, 0]);
+        // Порожній список (тип TAG_End) стає списком записів.
+        let empty = [10, 0, 0, 9, 0, 7, b's', b'e', b'r', b'v', b'e', b'r', b's', 0, 0, 0, 0, 0, 0];
+        assert_eq!(&super::prepend_server(&empty, "S", "s.net").unwrap()[13..18], &[10, 0, 0, 0, 1]);
+        assert!(super::prepend_server(&[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "S", "s").is_none());
     }
 
     #[test]

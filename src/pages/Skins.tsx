@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { SkinViewer, WalkingAnimation } from "skinview3d";
-import { Check, Copy, FileUp, Pencil, Plus, Save, Search, Trash2, UserRound } from "lucide-react";
+import { Check, FileUp, Pencil, Plus, Save, Search, Trash2, UserRound } from "lucide-react";
 import { api, type Account, type LibSkin, type SkinInfo, type SkinsState } from "../lib/api";
 import { t } from "../lib/i18n";
 import { skinThumb } from "../lib/skinrender";
@@ -266,27 +266,48 @@ export function Skins({ initialAccount }: { initialAccount?: string }) {
     );
   }
 
+  const accountSelect = accounts.length > 1 && (
+    <div style={{ width: 240 }}>
+      <Select
+        value={account?.id ?? null}
+        options={accounts.map((a) => ({ value: a.id, label: a.name, sub: a.kind === "microsoft" ? "Microsoft" : t("acc.offline"), icon: <SkinHead accountId={a.id} name={a.name} size={20} /> }))}
+        onChange={(v) => {
+          setAccountId(v);
+          setPick(null);
+        }}
+      />
+    </div>
+  );
+
+  // Скін зберігають сервери Mojang — офлайн-акаунту його ніде поставити, тож і бібліотека йому ні до чого.
+  if (!ms) {
+    return (
+      <div className="page">
+        <div className="page-head">
+          <h1>{t("skins.title")}</h1>
+          {accountSelect}
+        </div>
+        <div className="card">
+          <Empty icon={<SkinHead accountId={account?.id} name={account?.name} size={56} />} title={t("skins.offline_title")} text={t("skins.offline_note")}>
+            <button className="btn primary" onClick={() => setState({ addAccountOpen: true })}>
+              <Plus size={16} />
+              {t("acc.login_ms")}
+            </button>
+          </Empty>
+        </div>
+      </div>
+    );
+  }
+
   const capeUrl = cape ? (current?.capes.find((c) => c.id === cape)?.url ?? null) : null;
   const pickedApplied = !!pick && ((pick.libId && pick.libId === appliedId) || pick.source === "account");
   const unchanged = pickedApplied && slim === (current?.slim ?? slim) && cape === (current?.capes.find((c) => c.active)?.id ?? null);
-  const nickSource = pick?.source.startsWith("nick:") ? pick.source.slice(5) : null;
 
   return (
     <div className="page">
       <div className="page-head">
         <h1>{t("skins.title")}</h1>
-        {accounts.length > 1 && (
-          <div style={{ width: 240 }}>
-            <Select
-              value={account?.id ?? null}
-              options={accounts.map((a) => ({ value: a.id, label: a.name, sub: a.kind === "microsoft" ? "Microsoft" : t("acc.offline"), icon: <SkinHead accountId={a.id} name={a.name} size={20} /> }))}
-              onChange={(v) => {
-                setAccountId(v);
-                setPick(null);
-              }}
-            />
-          </div>
-        )}
+        {accountSelect}
         <button className="btn" onClick={() => setNickOpen(true)}>
           <Search size={15} />
           {t("skins.by_nick")}
@@ -316,7 +337,7 @@ export function Skins({ initialAccount }: { initialAccount?: string }) {
                 ]}
               />
             </div>
-            {ms && current && current.capes.length > 0 && (
+            {current && current.capes.length > 0 && (
               <div className="field">
                 <label>{t("acc.capes")}</label>
                 <div className="capes">
@@ -332,26 +353,10 @@ export function Skins({ initialAccount }: { initialAccount?: string }) {
                 </div>
               </div>
             )}
-            {ms ? (
-              <button className="btn primary lg" disabled={!pick || busy || !!unchanged} onClick={apply}>
-                {busy ? <div className="spinner" style={{ width: 16, height: 16 }} /> : <Check size={17} />}
-                {unchanged ? t("skins.applied") : t("skins.apply")}
-              </button>
-            ) : (
-              <div className="hint-bar" style={{ margin: 0 }}>
-                {t("skins.offline_note")}
-                {nickSource && (
-                  <button
-                    className="btn sm"
-                    style={{ marginTop: 8 }}
-                    onClick={() => navigator.clipboard.writeText(`/skin ${nickSource}`).then(() => toast("info", t("common.copied")))}
-                  >
-                    <Copy size={13} />
-                    /skin {nickSource}
-                  </button>
-                )}
-              </div>
-            )}
+            <button className="btn primary lg" disabled={!pick || busy || !!unchanged} onClick={apply}>
+              {busy ? <div className="spinner" style={{ width: 16, height: 16 }} /> : <Check size={17} />}
+              {unchanged ? t("skins.applied") : t("skins.apply")}
+            </button>
           </div>
         </aside>
 
@@ -367,23 +372,21 @@ export function Skins({ initialAccount }: { initialAccount?: string }) {
               <SkinCard
                 pick={currentPick}
                 active={pick?.key === currentPick.key}
-                applied={ms}
+                applied
                 onClick={() => choose(currentPick)}
                 actions={
-                  ms && (
-                    <button
-                      className="btn ghost sm icon"
-                      title={t("skins.save_current")}
-                      onClick={() =>
-                        api
-                          .skinSaveCurrent(account!.id)
-                          .then(reload)
-                          .catch(fail)
-                      }
-                    >
-                      <Save size={14} />
-                    </button>
-                  )
+                  <button
+                    className="btn ghost sm icon"
+                    title={t("skins.save_current")}
+                    onClick={() =>
+                      api
+                        .skinSaveCurrent(account!.id)
+                        .then(reload)
+                        .catch(fail)
+                    }
+                  >
+                    <Save size={14} />
+                  </button>
                 }
               />
             )}

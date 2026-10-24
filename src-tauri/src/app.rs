@@ -566,6 +566,8 @@ pub async fn featured_play(state: S<'_>) -> Result<String> {
         }
         task.finish::<()>(&Ok(()));
     }
+    // Сервер у списку «Мультиплеєр» — навіть якщо гравець його звідти прибрав.
+    servers::seed_servers(&ctx.paths.game_dir(&inst.id), &f);
     state.app.emit("instances-changed", ()).ok();
     let id = inst.id.clone();
     launch_instance(state.inner().clone(), id.clone(), Some((f.address.clone(), f.port)), None).await?;
@@ -1056,7 +1058,3 @@ pub async fn news_list(state: S<'_>) -> Result<Vec<news::Entry>> {
     news::patch_notes(&state.ctx()).await
 }
 
-#[tauri::command]
-pub async fn news_body(state: S<'_>, path: String) -> Result<String> {
-    news::patch_body(&state.ctx(), &path).await
-}
