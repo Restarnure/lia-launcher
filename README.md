@@ -93,7 +93,7 @@ node scripts/release.mjs 1.0.1 "Що нового (markdown)" --publish
 
 Без `--publish` скрипт лише збирає `release/<версія>/` (інсталятор + `latest.json`) для перевірки.
 
-- Оновлення беруться з `https://github.com/Restarnure/lia-launcher/releases/latest/download/latest.json` (публічний репозиторій лише з релізами; вихідний код може лишатися приватним). Один раз: `gh repo create Restarnure/lia-launcher --public`.
+- Оновлення беруться з `https://github.com/Restarnure/lia-launcher/releases/latest/download/latest.json`.
 - Підпис: приватний ключ `%USERPROFILE%\.tauri\lia-updater.key` (відкритий — у `tauri.conf.json`). **Зробіть резервну копію ключа**: без нього вже встановлені лаунчери не приймуть жодного оновлення. Ключ ніколи не комітиться.
 
 ## Вхід Microsoft
