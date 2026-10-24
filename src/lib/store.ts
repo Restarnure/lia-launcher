@@ -51,6 +51,8 @@ interface State {
   addAccountOpen: boolean;
   update: UpdateState;
   updateOpen: boolean;
+  /** Що зараз встановлюється з каталогу: «<збірка або modpack>:<проєкт>». Живе довше за сторінку. */
+  installing: Record<string, true>;
 }
 
 let state: State = {
@@ -70,6 +72,7 @@ let state: State = {
   addAccountOpen: false,
   update: { status: "idle" },
   updateOpen: false,
+  installing: {},
 };
 
 const listeners = new Set<() => void>();

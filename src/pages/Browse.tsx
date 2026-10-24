@@ -5,7 +5,7 @@ import { Check, Download, ExternalLink, Heart, Package, Search, WifiOff } from "
 import { api, type ContentKind, type Instance, type Json, type ProjectType, type SearchHit } from "../lib/api";
 import { ago, compact, date } from "../lib/format";
 import { getLang, t, type Key } from "../lib/i18n";
-import { fail, navigate, toast, useStore } from "../lib/store";
+import { fail, getState, navigate, setState, toast, useStore } from "../lib/store";
 import { Empty, InstanceIcon, LoaderBadge, Modal, Seg, Select } from "../components/ui";
 
 const TYPES: ProjectType[] = ["mod", "modpack", "resourcepack", "shader"];
@@ -91,7 +91,7 @@ export function Browse({ type: initialType, instanceId }: { type?: ProjectType; 
   const [loadingMore, setLoadingMore] = useState(false);
   const [open, setOpen] = useState<SearchHit | null>(null);
   const [installed, setInstalled] = useState<Set<string>>(new Set());
-  const [busy, setBusy] = useState<Set<string>>(new Set());
+  const installing = useStore((s) => s.installing);
   const q = useDebounced(query, 300);
   const reqId = useRef(0);
 
@@ -144,7 +144,13 @@ export function Browse({ type: initialType, instanceId }: { type?: ProjectType; 
       .catch(() => setInstalled(new Set()));
   }, [useTarget, inst, type]);
 
-  useEffect(() => refreshInstalled(), [refreshInstalled]);
+  // Що встановлюється в обрану збірку (чи як модпак) — навіть якщо почали до переходу на іншу сторінку.
+  const scope = type === "modpack" ? "modpack" : (inst?.id ?? "");
+  const busy = useMemo(() => new Set(Object.keys(installing).filter((k) => k.startsWith(`${scope}:`)).map((k) => k.slice(scope.length + 1))), [installing, scope]);
+  const busyKey = [...busy].join();
+
+  // Після кожного завершеного встановлення (зокрема розпочатого на попередньому відкритті сторінки).
+  useEffect(() => refreshInstalled(), [refreshInstalled, busyKey]);
 
   const more = async () => {
     if (!hits) return;
@@ -160,7 +166,9 @@ export function Browse({ type: initialType, instanceId }: { type?: ProjectType; 
   };
 
   const install = async (hit: SearchHit, versionId?: string) => {
-    setBusy((s) => new Set(s).add(hit.project_id));
+    const key = `${scope}:${hit.project_id}`;
+    if (getState().installing[key]) return;
+    setState((s) => ({ installing: { ...s.installing, [key]: true } }));
     try {
       if (type === "modpack") {
         let vid = versionId;
@@ -175,15 +183,13 @@ export function Browse({ type: initialType, instanceId }: { type?: ProjectType; 
       } else if (inst) {
         const res = await api.install(inst.id, hit.project_id, versionId);
         toast("success", t("browse.installed_toast", { names: res.map((r) => r.title).join(", ") }));
-        refreshInstalled();
       }
     } catch (e) {
       fail(e);
     } finally {
-      setBusy((s) => {
-        const n = new Set(s);
-        n.delete(hit.project_id);
-        return n;
+      setState((s) => {
+        const { [key]: _, ...rest } = s.installing;
+        return { installing: rest };
       });
     }
   };
