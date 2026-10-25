@@ -293,7 +293,7 @@ const uk = {
   "acc.ms_unavailable": "Вхід Microsoft поки вимкнено: потрібен Client ID, який схвалила Mojang.",
   "acc.ms_setup": "Налаштувати",
   "acc.ms_soon": "Вхід через Microsoft скоро з'явиться.",
-  "acc.offline_locked": "Спершу увійдіть через Microsoft з купленою Minecraft — після цього можна додавати офлайн-ніки.",
+  "acc.offline_locked": "Спершу увійдіть через Microsoft з купленою грою, тоді можна буде додавати офлайн-ніки.",
   "acc.selected": "Обраний",
   "acc.remove_title": "Видалити акаунт {name}?",
   "acc.remove_text": "Його можна буде додати знову будь-коли.",
