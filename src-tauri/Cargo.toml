@@ -1,6 +1,6 @@
 [package]
 name = "lia-launcher"
-version = "1.0.2"
+version = "1.0.3"
 description = "ЛІЯ — лаунчер Minecraft"
 edition = "2021"
 publish = false
