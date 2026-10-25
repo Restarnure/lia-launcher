@@ -59,6 +59,8 @@ export function AddAccount({ onClose }: { onClose: () => void }) {
             {busy === "ms" ? <div className="spinner" style={{ width: 14, height: 14 }} /> : <LogIn size={16} />}
             {busy === "ms" ? t("acc.login_wait") : t("acc.login_ms")}
           </button>
+        ) : !import.meta.env.DEV ? (
+          <p className="hint">{t("acc.ms_soon")}</p>
         ) : (
           <p className="hint">
             {t("acc.ms_unavailable")}{" "}

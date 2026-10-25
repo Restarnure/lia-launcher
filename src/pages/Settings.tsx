@@ -216,7 +216,7 @@ function SettingsBody({ s, total, dataDir, version }: { s: S; total: number; dat
           <UpdateRow />
           <p className="hint">{t("set.about_text")}</p>
 
-          <details className="howto dev">
+          {import.meta.env.DEV && <details className="howto dev">
             <summary>{t("set.dev")}</summary>
             <p className="hint">{t("set.ms_hint")}</p>
             <div className="field">
@@ -239,7 +239,7 @@ function SettingsBody({ s, total, dataDir, version }: { s: S; total: number; dat
               </button>
             </div>
             <p className="hint">{t("set.ms_docs")}</p>
-          </details>
+          </details>}
         </section>
       </div>
     </div>
