@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 /// Client ID застосунку Azure для входу Microsoft, вшитий у збірку (схвалений Mojang).
 /// Задається змінною LIA_MS_CLIENT_ID під час збірки або тут, у BUILT_IN.
-const BUILT_IN: &str = "";
+const BUILT_IN: &str = "d3e68979-4edc-432d-b092-70ab0060e19e";
 pub const DEFAULT_MS_CLIENT_ID: &str = match option_env!("LIA_MS_CLIENT_ID") {
     Some(id) => id,
     None => BUILT_IN,

@@ -131,6 +131,7 @@ export interface AccountsState {
   accounts: Account[];
   selected: string | null;
   msAvailable: boolean;
+  offlineAllowed: boolean;
 }
 
 export interface SkinInfo {
