@@ -72,8 +72,40 @@ Client ID схваленого застосунку Azure вшитий у `BUILT
 
 Інший сервер так не поставити: адреса файлу і перевірка `id == "shotam"` у `valid()` зашиті в код, потрібен реліз.
 
+## Сервер ЛІЇ (ЛІЯ ID, друзі, ретранслятор)
+
+Код у `server/` (Rust, axum, SQLite). Працює на Oracle (`/srv/lia`, docker compose з `server/deploy/`):
+
+- `https://lia.starnure.dev` через Cloudflare Tunnel `lia`: API лаунчера (`/api/…`), Yggdrasil для authlib-injector (`/yggdrasil`), текстури скінів.
+- `*.play.lia.starnure.dev:25570` напряму: ретранслятор LAN-світів. Код світу береться з адреси в handshake Minecraft, службові з'єднання лаунчера починаються з байтів `00 LIA`.
+- У VCN Oracle і в `DOCKER-USER` (`/etc/iptables/rules.v4`) відкрито TCP 25570.
+
+Ключ підпису текстур `/srv/lia/data/signing.pem` створюється один раз (`openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096`), база й файли — у `/srv/lia/data`.
+
+Оновити сервер: скопіювати `server/{Cargo.toml,Cargo.lock,src,Dockerfile}` у `/srv/lia/server` і `docker compose up -d --build`.
+
+Гра з ЛІЯ ID запускається з `-javaagent:authlib-injector.jar=https://lia.starnure.dev/yggdrasil` і `-Dhttp.agent=LIA-Launcher/…` (Cloudflare відсікає голий `Java/1.8…`).
+
+Перевірки:
+
+```bash
+cd server && cargo test
+python server/e2e.py
+```
+
+`e2e.py` проти локального сервера (`LIA_HTTP=127.0.0.1:18080 LIA_PLAY_DOMAIN=play.localhost`) або бойового, деталі в шапці файлу.
+
+```bash
+cd src-tauri && cargo test --test lia -- --ignored --nocapture --test-threads=1
+```
+
+Експорт і встановлення збірки, а також світ через ретранслятор: Paper в online-mode з authlib-injector і бот, що заходить як гравець ЛІЯ ID. Змінні описані в `tests/lia.rs`. `LIA_E2E_LIA=1` у `tests/e2e.rs` запускає гру з ЛІЯ ID.
+
+Редактор скінів: `node scripts/skinmap.check.ts` перевіряє розкладку текстури й дзеркало.
+
 ## Структура
 
 - `src-tauri/src/`: ядро на Rust (Tauri 2): `mojang/` (версії, бібліотеки, ресурси, Java), `loaders.rs`, `launch.rs`, `modrinth.rs`, `content.rs`, `accounts.rs`, `skinlib.rs`, `servers.rs`, `app.rs` (команди для інтерфейсу).
 - `src/`: інтерфейс на React і TypeScript: `pages/`, `components/`, `lib/`.
 - `scripts/release.mjs`: випуск оновлення.
+- `server/`: сервер ЛІЇ (ЛІЯ ID, друзі, збірки, ретранслятор); `src-tauri/src/lia.rs` і `src/lib/lia.ts` — його клієнт у лаунчері.

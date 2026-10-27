@@ -23,7 +23,8 @@
     "marked": "^18.1.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "skinview3d": "^3.4.2"
+    "skinview3d": "^3.4.2",
+    "three": "^0.156.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.4",

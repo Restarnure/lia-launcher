@@ -6,6 +6,7 @@ pub mod ctx;
 pub mod error;
 pub mod instances;
 pub mod launch;
+pub mod lia;
 pub mod loaders;
 pub mod logparse;
 pub mod migrate;
@@ -113,6 +114,16 @@ pub fn run() {
             app::skin_save_current,
             app::skin_update,
             app::skin_remove,
+            app::skin_save_png,
+            app::skin_export,
+            app::account_login_lia,
+            app::lia_session,
+            app::lia_request,
+            app::lia_publish,
+            app::lia_install_pack,
+            app::lia_update_pack,
+            app::lia_share_world,
+            app::lia_unshare,
             app::skin_apply,
             app::mcdir_scan,
             app::mcdir_import,

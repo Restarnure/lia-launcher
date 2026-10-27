@@ -22,7 +22,7 @@ pub struct MsTokens {
 #[serde(rename_all = "camelCase")]
 pub struct Account {
     pub id: String,
-    /// "microsoft" | "offline"
+    /// "microsoft" | "offline" | "lia" (ЛІЯ ID)
     pub kind: String,
     pub name: String,
     /// UUID без дефісів.
@@ -30,6 +30,8 @@ pub struct Account {
     pub added: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ms: Option<MsTokens>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lia: Option<crate::lia::LiaTokens>,
 }
 
 /// Те, що бачить інтерфейс: без токенів.
@@ -89,7 +91,7 @@ pub fn offline_uuid(name: &str) -> String {
 pub fn offline(name: &str) -> Result<Account> {
     let name = validate_nick(name)?;
     let uuid = offline_uuid(&name);
-    Ok(Account { id: format!("offline-{uuid}"), kind: "offline".into(), name, uuid, added: util::now_ms(), ms: None })
+    Ok(Account { id: format!("offline-{uuid}"), kind: "offline".into(), name, uuid, added: util::now_ms(), ms: None, lia: None })
 }
 
 pub fn dashed(uuid: &str) -> String {
@@ -283,6 +285,7 @@ async fn finish_login(http: &reqwest::Client, ms_access: String, refresh: String
         uuid: p.id,
         added: util::now_ms(),
         ms: Some(MsTokens { refresh_token: refresh, access_token: token, expires_at: util::now_ms() + expires * 1000, xuid }),
+        lia: None,
     })
 }
 

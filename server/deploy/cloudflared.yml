@@ -1,0 +1,6 @@
+tunnel: a846d15b-b818-4cd1-8f85-4fb49920668b
+credentials-file: /etc/cloudflared/lia.json
+ingress:
+  - hostname: lia.starnure.dev
+    service: http://lia-server:8080
+  - service: http_status:404

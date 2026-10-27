@@ -88,8 +88,8 @@ export function Home() {
               <ArrowRight size={15} />
             </button>
           </div>
-          <div className="igrid">
-            {instances.slice(0, 4).map((i) => (
+          <div className="igrid recent">
+            {instances.slice(0, 8).map((i) => (
               <InstanceCard key={i.id} inst={i} />
             ))}
           </div>

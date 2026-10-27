@@ -32,6 +32,8 @@ pub struct Settings {
     pub last_instance: Option<String>,
     pub show_featured: bool,
     pub show_snapshots: bool,
+    /// Масштаб інтерфейсу лаунчера (1.0 = 100%).
+    pub ui_scale: f64,
 }
 
 impl Default for Settings {
@@ -52,6 +54,7 @@ impl Default for Settings {
             last_instance: None,
             show_featured: true,
             show_snapshots: false,
+            ui_scale: 1.0,
         }
     }
 }
@@ -89,6 +92,7 @@ impl Settings {
         let total = total_memory_mb().max(2048) as u32;
         self.memory_mb = self.memory_mb.clamp(512, total);
         self.concurrency = self.concurrency.clamp(1, 64);
+        self.ui_scale = if self.ui_scale.is_finite() { self.ui_scale.clamp(0.75, 1.5) } else { 1.0 };
         self.width = self.width.clamp(320, 7680);
         self.height = self.height.clamp(240, 4320);
         if !["keep", "minimize", "close"].contains(&self.on_launch.as_str()) {

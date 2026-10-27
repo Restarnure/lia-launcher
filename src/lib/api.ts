@@ -33,6 +33,7 @@ export interface Settings {
   lastInstance: string | null;
   showFeatured: boolean;
   showSnapshots: boolean;
+  uiScale: number;
 }
 
 export interface ModpackRef {
@@ -121,7 +122,7 @@ export interface GameEvent {
 
 export interface Account {
   id: string;
-  kind: "microsoft" | "offline";
+  kind: "microsoft" | "offline" | "lia";
   name: string;
   uuid: string;
   added: number;
@@ -275,6 +276,61 @@ export interface SearchResult {
   total_hits: number;
 }
 
+export interface LiaSession {
+  api: string;
+  token: string;
+  name: string;
+  uuid: string;
+  accountId: string;
+}
+
+export interface LiaPresence {
+  state: "online" | "playing";
+  since: number;
+  game?: { name?: string | null; mcVersion?: string | null; loader?: string | null; pack?: string | null };
+  world?: { code: string; address: string };
+}
+
+export interface LiaUser {
+  name: string;
+  uuid: string;
+  skin: string | null;
+  slim: boolean;
+  bio: string;
+  presence?: LiaPresence | null;
+}
+
+export interface LiaFriends {
+  friends: LiaUser[];
+  incoming: LiaUser[];
+  outgoing: LiaUser[];
+}
+
+export interface LiaPack {
+  id: string;
+  owner: string;
+  mine: boolean;
+  name: string;
+  description: string;
+  mcVersion: string;
+  loader: Loader;
+  visibility: "friends" | "public";
+  version: number;
+  size: number;
+  updated: number;
+  subscribed: boolean;
+  subscribers: number;
+}
+
+export interface LiaEvent {
+  id: number;
+  user: string;
+  kind: "friend" | "pack_published" | "pack_updated";
+  pack: string | null;
+  data: { name?: string; version?: number; a?: string; b?: string };
+  created: number;
+}
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export type Json = any;
 
@@ -350,6 +406,8 @@ export const api = {
   skinSaveCurrent: (id: string) => invoke<LibSkin>("skin_save_current", { id }),
   skinUpdate: (id: string, patch: { name?: string; slim?: boolean }) => invoke<void>("skin_update", { id, ...patch }),
   skinRemove: (id: string) => invoke<void>("skin_remove", { id }),
+  skinSavePng: (data: string, name: string, slim: boolean, replace?: string | null) => invoke<LibSkin>("skin_save_png", { data, name, slim, replace }),
+  skinExport: (path: string, data: string) => invoke<void>("skin_export", { path, data }),
   skinApply: (accountId: string, skinId: string, slim: boolean) => invoke<void>("skin_apply", { accountId, skinId, slim }),
 
   mcdirScan: (path?: string) => invoke<McScan>("mcdir_scan", { path }),
@@ -357,4 +415,14 @@ export const api = {
     invoke<Instance>("mcdir_import", { path, spec, what }),
 
   news: () => invoke<NewsEntry[]>("news_list"),
+
+  loginLia: (name: string, password: string, register: boolean) => invoke<Account>("account_login_lia", { name, password, register }),
+  liaSession: () => invoke<LiaSession | null>("lia_session"),
+  lia: <T = Json>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown) => invoke<T>("lia_request", { method, path, body }),
+  liaPublish: (instanceId: string, visibility: "friends" | "public", description: string, packId?: string | null) =>
+    invoke<LiaPack>("lia_publish", { instanceId, visibility, description, packId }),
+  liaInstallPack: (packId: string) => invoke<Instance>("lia_install_pack", { packId }),
+  liaUpdatePack: (instanceId: string) => invoke<Instance>("lia_update_pack", { instanceId }),
+  liaShareWorld: (instanceId: string, port: number) => invoke<{ code: string; address: string }>("lia_share_world", { instanceId, port }),
+  liaUnshare: (instanceId: string) => invoke<void>("lia_unshare", { instanceId }),
 };

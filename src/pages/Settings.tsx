@@ -77,6 +77,14 @@ function SettingsBody({ s, total, dataDir, version }: { s: S; total: number; dat
             <span className="grow">{t("set.featured")}</span>
             <Switch on={s.showFeatured} onChange={(showFeatured) => saveSettings({ showFeatured })} />
           </div>
+          <div className="set-row">
+            <span className="grow">{t("set.ui_scale")}</span>
+            <Seg
+              value={String(s.uiScale)}
+              onChange={(v) => saveSettings({ uiScale: Number(v) })}
+              options={["0.8", "0.9", "1", "1.1", "1.25"].map((v) => ({ value: v, label: `${Math.round(Number(v) * 100)}%` }))}
+            />
+          </div>
         </section>
 
         <section className="card pad set-card">

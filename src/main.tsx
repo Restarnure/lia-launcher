@@ -9,6 +9,7 @@ import "./styles/pages.css";
 import { App } from "./App";
 import { fail, init } from "./lib/store";
 import { scheduleUpdateChecks } from "./lib/updater";
+import { initLia } from "./lib/lia";
 
 // Без контекстного меню браузера: це застосунок, а не сторінка.
 window.addEventListener("contextmenu", (e) => {
@@ -18,7 +19,10 @@ window.addEventListener("contextmenu", (e) => {
 createRoot(document.getElementById("root")!).render(<App />);
 
 init()
-  .then(scheduleUpdateChecks)
+  .then(() => {
+    initLia().catch(() => {});
+    scheduleUpdateChecks();
+  })
   .catch(fail)
   .finally(() => {
     // Вікно стартує прихованим, щоб не блимало білим до першого кадру.

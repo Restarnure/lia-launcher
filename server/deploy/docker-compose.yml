@@ -1,0 +1,26 @@
+# Сервер ЛІЇ на Oracle: /srv/lia (поруч, але окремо від KRODA).
+# API — через Cloudflare Tunnel «lia» (lia.starnure.dev), ретранслятор — напряму на 25570.
+services:
+  lia-server:
+    build: ./server
+    container_name: lia-server
+    restart: unless-stopped
+    environment:
+      LIA_PUBLIC_URL: https://lia.starnure.dev
+      LIA_PLAY_DOMAIN: play.lia.starnure.dev
+      LIA_RELAY_PORT: "25570"
+    volumes:
+      - ./data:/data
+    ports:
+      - "25570:25570"
+    mem_limit: 512m
+
+  lia-cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: lia-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared:/etc/cloudflared:ro
+    depends_on:
+      - lia-server

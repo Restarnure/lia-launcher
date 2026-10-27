@@ -8,6 +8,7 @@ import { t, type Key } from "../lib/i18n";
 import { back, fail, launch, navigate, toast, useStore, type InstanceTab } from "../lib/store";
 import { instanceMenu } from "../components/InstanceCard";
 import { confirmDialog, Empty, InstanceIcon, LoaderBadge, Menu, PlayButton, Switch } from "../components/ui";
+import { PublishButton } from "../components/Publish";
 import { Console } from "./Console";
 import { InstanceSettings } from "./InstanceSettings";
 
@@ -70,6 +71,7 @@ export function InstanceView({ id, tab }: { id: string; tab?: InstanceTab }) {
         <button className="btn icon" title={t("common.open_folder")} onClick={() => api.instanceFolder(inst.id).then((p) => api.openPath(p)).catch(fail)}>
           <FolderOpen size={17} />
         </button>
+        <PublishButton inst={inst} />
         <Menu items={instanceMenu(inst)} className="btn icon" />
         <PlayButton inst={inst} />
       </header>

@@ -54,7 +54,7 @@ export function Accounts() {
                   <b className="ellipsis" style={{ display: "block" }}>
                     {a.name}
                   </b>
-                  <span className={`badge ${a.kind === "microsoft" ? "blue" : ""}`}>{a.kind === "microsoft" ? t("acc.microsoft") : t("acc.offline")}</span>
+                  <span className={`badge ${a.kind === "offline" ? "" : "blue"}`}>{a.kind === "microsoft" ? t("acc.microsoft") : a.kind === "lia" ? t("acc.lia") : t("acc.offline")}</span>
                 </div>
                 {a.id === selected && (
                   <span className="badge green">
@@ -129,7 +129,7 @@ function SkinPanel({ account }: { account: Account }) {
     v.animation = anim;
   }, [walk]);
 
-  const ms = account.kind === "microsoft";
+  const ms = account.kind !== "offline";
 
   return (
     <div className="skin-panel card">

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { AlertTriangle, Boxes, Shirt, CheckCircle2, Compass, Copy, Download, FileText, Home, Info, Minus, Settings as SettingsIcon, Square, Terminal, X, XCircle } from "lucide-react";
+import { AlertTriangle, Boxes, CheckCircle2, Compass, Copy, Download, FileText, Home, Info, Minus, Settings as SettingsIcon, Shirt, Square, Terminal, Users, X, XCircle } from "lucide-react";
 import { api, type ContentKind } from "../lib/api";
 import { bytes } from "../lib/format";
 import { t, type Key } from "../lib/i18n";
@@ -115,11 +115,12 @@ export function Sidebar() {
   const route = useStore((s) => s.route);
   const accounts = useStore((s) => s.accounts);
   const me = accounts.accounts.find((a) => a.id === accounts.selected);
-  const items: { page: "home" | "instances" | "browse" | "skins"; icon: React.ReactNode; label: Key }[] = [
+  const items: { page: "home" | "instances" | "browse" | "skins" | "friends"; icon: React.ReactNode; label: Key }[] = [
     { page: "home", icon: <Home size={21} />, label: "nav.home" },
     { page: "instances", icon: <Boxes size={21} />, label: "nav.instances" },
     { page: "browse", icon: <Compass size={21} />, label: "nav.browse" },
     { page: "skins", icon: <Shirt size={21} />, label: "nav.skins" },
+    { page: "friends", icon: <Users size={21} />, label: "nav.friends" },
   ];
   const active = route.page === "instance" ? "instances" : route.page;
   return (
@@ -231,7 +232,7 @@ function kindFor(file: string, tab?: string): ContentKind | "mrpack" | null {
 }
 
 // Бібліотека скінів має сенс лише з акаунтом Microsoft: офлайн-акаунту скін не поставити.
-const hasMicrosoft = (s: ReturnType<typeof getState>) => s.accounts.accounts.some((a) => a.kind === "microsoft");
+const hasMicrosoft = (s: ReturnType<typeof getState>) => s.accounts.accounts.some((a) => a.kind !== "offline");
 
 export function DropHandler() {
   const [hover, setHover] = useState<string[] | null>(null);

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   api,
   errorOf,
@@ -25,6 +26,8 @@ export type Route =
   | { page: "browse"; type?: ProjectType; instanceId?: string | null }
   | { page: "accounts" }
   | { page: "skins"; accountId?: string }
+  | { page: "skin-editor"; start?: { name: string; data: string | null; slim: boolean; libId?: string | null } }
+  | { page: "friends" }
   | { page: "settings" };
 
 export interface Toast {
@@ -159,12 +162,15 @@ export async function refreshAccounts() {
   }
 }
 
+const applyScale = (scale: number) => getCurrentWebview().setZoom(scale).catch(fail);
+
 export async function saveSettings(patch: Partial<Settings>) {
   const cur = state.settings;
   if (!cur) return;
   try {
     const s = await api.settingsSet({ ...cur, ...patch });
     if (s.language !== cur.language) setLang(s.language);
+    if (s.uiScale !== cur.uiScale) applyScale(s.uiScale);
     setState({ settings: s, info: state.info ? { ...state.info } : null });
     if (patch.msClientId !== undefined) refreshAccounts();
     if (patch.dataDir !== undefined) {
@@ -201,6 +207,7 @@ const LOG_KEEP = 8000;
 export async function init() {
   const [settings, info] = await Promise.all([api.settingsGet(), api.appInfo()]);
   setLang(settings.language);
+  applyScale(settings.uiScale);
   setState({ settings, info });
   await Promise.all([refreshInstances(), refreshAccounts()]);
   const running = await api.running().catch(() => []);

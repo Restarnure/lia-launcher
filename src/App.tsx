@@ -9,11 +9,13 @@ import { InstanceView } from "./pages/InstanceView";
 import { Browse } from "./pages/Browse";
 import { AddAccount } from "./components/AddAccount";
 import { Settings } from "./pages/Settings";
+import { Friends } from "./pages/Friends";
 import { UpdateModal } from "./components/Update";
 
 // 3D-перегляд скінів (three.js) — найважча частина; вантажиться лише на сторінці акаунтів.
 const Accounts = lazy(() => import("./pages/Accounts").then((m) => ({ default: m.Accounts })));
 const Skins = lazy(() => import("./pages/Skins").then((m) => ({ default: m.Skins })));
+const SkinEditor = lazy(() => import("./pages/SkinEditor").then((m) => ({ default: m.SkinEditor })));
 
 function Page() {
   const route = useStore((s) => s.route);
@@ -38,6 +40,14 @@ function Page() {
           <Skins key={route.accountId ?? ""} initialAccount={route.accountId} />
         </Suspense>
       );
+    case "skin-editor":
+      return (
+        <Suspense fallback={<Splash />}>
+          <SkinEditor start={route.start} />
+        </Suspense>
+      );
+    case "friends":
+      return <Friends />;
     case "settings":
       return <Settings />;
   }

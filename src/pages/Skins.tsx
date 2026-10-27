@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { SkinViewer, WalkingAnimation } from "skinview3d";
-import { Check, FileUp, Pencil, Plus, Save, Search, Trash2, UserRound } from "lucide-react";
+import { Brush, Check, FileUp, Pencil, Plus, Save, Search, Trash2, UserRound } from "lucide-react";
 import { api, type Account, type LibSkin, type SkinInfo, type SkinsState } from "../lib/api";
 import { t } from "../lib/i18n";
 import { skinThumb } from "../lib/skinrender";
-import { fail, refreshAccounts, setState, toast, useStore } from "../lib/store";
+import { fail, navigate, refreshAccounts, setState, toast, useStore } from "../lib/store";
 import { confirmDialog, Empty, loadSkin, Modal, Seg, Select, SkinHead } from "../components/ui";
 
 type Pick = { key: string; libId?: string; defaultId?: string; name: string; data: string; slim: boolean; source: string };
@@ -132,7 +132,8 @@ export function Skins({ initialAccount }: { initialAccount?: string }) {
   const [busy, setBusy] = useState(false);
   const [nickOpen, setNickOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
-  const ms = account?.kind === "microsoft";
+  // Скін зберігає сервер: Mojang для Microsoft, ЛІЯ ID — для акаунтів ЛІЇ (видно всім гравцям ЛІЇ).
+  const ms = account?.kind === "microsoft" || account?.kind === "lia";
 
   const reload = useCallback(async () => {
     try {
@@ -270,7 +271,7 @@ export function Skins({ initialAccount }: { initialAccount?: string }) {
     <div style={{ width: 240 }}>
       <Select
         value={account?.id ?? null}
-        options={accounts.map((a) => ({ value: a.id, label: a.name, sub: a.kind === "microsoft" ? "Microsoft" : t("acc.offline"), icon: <SkinHead accountId={a.id} name={a.name} size={20} /> }))}
+        options={accounts.map((a) => ({ value: a.id, label: a.name, sub: a.kind === "microsoft" ? "Microsoft" : a.kind === "lia" ? t("acc.lia") : t("acc.offline"), icon: <SkinHead accountId={a.id} name={a.name} size={20} /> }))}
         onChange={(v) => {
           setAccountId(v);
           setPick(null);
@@ -286,6 +287,10 @@ export function Skins({ initialAccount }: { initialAccount?: string }) {
         <div className="page-head">
           <h1>{t("skins.title")}</h1>
           {accountSelect}
+          <button className="btn" onClick={() => navigate({ page: "skin-editor" })}>
+            <Brush size={15} />
+            {t("editor.title")}
+          </button>
         </div>
         <div className="card">
           <Empty icon={<SkinHead accountId={account?.id} name={account?.name} size={56} />} title={t("skins.offline_title")} text={t("skins.offline_note")}>
@@ -308,6 +313,10 @@ export function Skins({ initialAccount }: { initialAccount?: string }) {
       <div className="page-head">
         <h1>{t("skins.title")}</h1>
         {accountSelect}
+        <button className="btn" onClick={() => navigate({ page: "skin-editor", start: pick ? { name: pick.libId ? pick.name : t("editor.new_name"), data: pick.data, slim, libId: pick.libId } : undefined })}>
+          <Brush size={15} />
+          {t("editor.title")}
+        </button>
         <button className="btn" onClick={() => setNickOpen(true)}>
           <Search size={15} />
           {t("skins.by_nick")}
@@ -401,6 +410,9 @@ export function Skins({ initialAccount }: { initialAccount?: string }) {
                   onClick={() => choose(p)}
                   actions={
                     <>
+                      <button className="btn ghost sm icon" title={t("editor.title")} onClick={() => navigate({ page: "skin-editor", start: { name: s.name, data: s.data, slim: s.slim, libId: s.id } })}>
+                        <Brush size={13} />
+                      </button>
                       <button className="btn ghost sm icon" title={t("skins.rename")} onClick={() => setRenaming(s.id)}>
                         <Pencil size={13} />
                       </button>

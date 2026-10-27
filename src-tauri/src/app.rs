@@ -404,7 +404,8 @@ async fn selected_account(state: &AppState) -> Result<Account> {
         .ok_or_else(|| err("no_account", "додайте акаунт, щоб грати"))?;
     let client_id = state.settings().client_id();
     let acc = &mut list[idx];
-    match accounts::ensure_fresh(&state.http, &client_id, acc).await {
+    let fresh = if acc.kind == "lia" { crate::lia::ensure_fresh(&state.http, acc).await } else { accounts::ensure_fresh(&state.http, &client_id, acc).await };
+    match fresh {
         Ok(true) => accounts::save(&list)?,
         Ok(false) => {}
         // Без мережі граємо зі старим токеном: одиночна гра працює, онлайн-сервери — ні.
@@ -445,11 +446,21 @@ pub async fn launch_instance(state: Arc<AppState>, id: String, server: Option<(S
             install::copy_assets(pairs, &game_dir.join("resources"), &task)?;
         }
         let ms = account.ms.clone();
+        let mut jvm_args = launch::split_args(inst.jvm_args.as_deref().unwrap_or(&settings.jvm_args));
+        // ЛІЯ ID: гра входить і перевіряє гравців через сервер ЛІЇ (authlib-injector).
+        if account.lia.is_some() {
+            jvm_args.splice(0..0, crate::lia::jvm_args(&crate::lia::injector(&ctx).await?));
+        }
+        let token = match (&ms, &account.lia) {
+            (Some(m), _) => m.access_token.clone(),
+            (_, Some(l)) => l.access_token.clone(),
+            _ => "0".into(),
+        };
         let opts = Options {
             game_dir: game_dir.clone(),
             natives_dir: natives_dir.clone(),
             memory_mb: inst.memory_mb.unwrap_or(settings.memory_mb),
-            jvm_args: launch::split_args(inst.jvm_args.as_deref().unwrap_or(&settings.jvm_args)),
+            jvm_args,
             resolution: (inst.width.unwrap_or(settings.width), inst.height.unwrap_or(settings.height)),
             fullscreen: inst.fullscreen.unwrap_or(settings.fullscreen),
             server: server.clone(),
@@ -457,8 +468,8 @@ pub async fn launch_instance(state: Arc<AppState>, id: String, server: Option<(S
             auth: Auth {
                 name: account.name.clone(),
                 uuid: account.uuid.clone(),
-                token: ms.as_ref().map(|m| m.access_token.clone()).unwrap_or_else(|| "0".into()),
-                user_type: if ms.is_some() { "msa" } else { "legacy" },
+                token,
+                user_type: if ms.is_some() { "msa" } else if account.lia.is_some() { "mojang" } else { "legacy" },
                 xuid: ms.as_ref().map(|m| m.xuid.clone()).unwrap_or_else(|| "0".into()),
             },
         };
@@ -467,6 +478,7 @@ pub async fn launch_instance(state: Arc<AppState>, id: String, server: Option<(S
         let app = state.app.clone();
         let on_launch = settings.on_launch.clone();
         launch::spawn(&ctx, &id, &java, args, &game_dir, natives_dir, move |exit| {
+            crate::lia::unshare(&exit.instance_id);
             if let Ok(mut i) = instances::get(&paths, &exit.instance_id) {
                 i.play_time += ((util::now_ms() - exit.started).max(0) / 1000) as u64;
                 i.last_played = Some(exit.started);
@@ -918,6 +930,14 @@ async fn ms_token(state: &AppState, id: &str) -> Result<String> {
 pub async fn account_skin(state: S<'_>, id: String) -> Result<Value> {
     let acc = state.accounts.lock().await.iter().find(|a| a.id == id).cloned().ok_or_else(|| err("no_account", "акаунт не знайдено"))?;
     let http = &state.http;
+    if acc.kind == "lia" {
+        let me = lia_call(&state, reqwest::Method::GET, "/api/me", None).await?;
+        let skin = match me["skin"].as_str() {
+            Some(u) => Some(skins::png_url(&crate::net::get_bytes(http, u).await?)),
+            None => None,
+        };
+        return Ok(json!({ "skin": skin, "url": me["skin"], "slim": me["slim"], "capes": [], "source": "lia" }));
+    }
     if acc.kind == "microsoft" {
         let token = ms_token(&state, &id).await?;
         let p = accounts::profile(http, &token).await?;
@@ -997,6 +1017,33 @@ pub async fn skin_save_current(state: S<'_>, id: String) -> Result<skinlib::Skin
     Ok(view)
 }
 
+fn png_from_data_url(data: &str) -> Result<Vec<u8>> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data.trim_start_matches("data:image/png;base64,")).map_err(|e| err("invalid_skin", e.to_string()))?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(err("invalid_skin", "файл завеликий для скіна"));
+    }
+    Ok(bytes)
+}
+
+/// Зберегти скін із редактора. `replace` — скін бібліотеки, який редагували: його замінює новий.
+#[tauri::command]
+pub async fn skin_save_png(data: String, name: String, slim: bool, replace: Option<String>) -> Result<skinlib::SkinView> {
+    let view = skinlib::add(&png_from_data_url(&data)?, &name, Some(slim), "editor")?;
+    // Той самий вміст — той самий id; інакше прибираємо стару версію.
+    skinlib::update(&view.skin.id, Some(name), Some(slim))?;
+    if let Some(old) = replace.filter(|o| *o != view.skin.id) {
+        skinlib::remove(&old)?;
+    }
+    Ok(view)
+}
+
+#[tauri::command]
+pub async fn skin_export(path: String, data: String) -> Result<()> {
+    std::fs::write(&path, png_from_data_url(&data)?)?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn skin_update(id: String, name: Option<String>, slim: Option<bool>) -> Result<()> {
     skinlib::update(&id, name, slim)
@@ -1017,6 +1064,13 @@ pub async fn skin_apply(state: S<'_>, account_id: String, skin_id: String, slim:
     } else {
         skinlib::bytes_of(&skin_id)?
     };
+    let kind = state.accounts.lock().await.iter().find(|a| a.id == account_id).map(|a| a.kind.clone());
+    if kind.as_deref() == Some("lia") {
+        let token = lia_account(&state).await?.1;
+        let resp = state.http.put(format!("{}/api/me/skin", crate::lia::api())).query(&[("slim", slim.to_string())]).bearer_auth(token).body(bytes).send().await?;
+        let me = crate::lia::parse(resp).await?;
+        return skinlib::set_applied(&account_id, &skin_id, me["skin"].as_str().unwrap_or(""));
+    }
     let token = ms_token(&state, &account_id).await?;
     let profile = accounts::upload_skin(&state.http, &token, bytes, slim).await?;
     if let Some(active) = profile.skins.iter().find(|s| s.state == "ACTIVE") {
@@ -1060,3 +1114,179 @@ pub async fn news_list(state: S<'_>) -> Result<Vec<news::Entry>> {
     news::patch_notes(&state.ctx()).await
 }
 
+
+// ---------------------------------------------------------------- ЛІЯ ID і друзі
+
+#[tauri::command]
+pub async fn account_login_lia(state: S<'_>, name: String, password: String, register: bool) -> Result<AccountView> {
+    let acc = if register { crate::lia::register(&state.http, &name, &password).await? } else { crate::lia::login(&state.http, &name, &password).await? };
+    upsert(&state, acc).await
+}
+
+/// Акаунт ЛІЯ ID для соцмережі: обраний, якщо це ЛІЯ ID, інакше перший такий. Токен — свіжий.
+async fn lia_account(state: &AppState) -> Result<(Account, String)> {
+    let sel = state.settings().selected_account;
+    let mut list = state.accounts.lock().await;
+    let idx = list
+        .iter()
+        .position(|a| a.kind == "lia" && Some(&a.id) == sel.as_ref())
+        .or_else(|| list.iter().position(|a| a.kind == "lia"))
+        .ok_or_else(|| err("lia_none", "увійдіть у ЛІЯ ID"))?;
+    if crate::lia::ensure_fresh(&state.http, &mut list[idx]).await? {
+        accounts::save(&list)?;
+    }
+    let acc = list[idx].clone();
+    let token = acc.lia.as_ref().map(|t| t.access_token.clone()).unwrap_or_default();
+    Ok((acc, token))
+}
+
+async fn lia_call(state: &AppState, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
+    let token = lia_account(state).await?.1;
+    crate::lia::call(&state.http, method, path, Some(&token), body).await
+}
+
+/// Дані для WebSocket статусів (інтерфейс підключається сам). `null` — ЛІЯ ID немає.
+#[tauri::command]
+pub async fn lia_session(state: S<'_>) -> Result<Value> {
+    match lia_account(&state).await {
+        Ok((acc, token)) => Ok(json!({ "api": crate::lia::api(), "token": token, "name": acc.name, "uuid": acc.uuid, "accountId": acc.id })),
+        Err(Error::Coded { code: "lia_none", .. }) => Ok(Value::Null),
+        Err(e) => Err(e),
+    }
+}
+
+/// Запит до API ЛІЇ від імені акаунта ЛІЯ ID (лише /api/…).
+#[tauri::command]
+pub async fn lia_request(state: S<'_>, method: String, path: String, body: Option<Value>) -> Result<Value> {
+    if !path.starts_with("/api/") || path.contains("..") {
+        return Err(err("invalid", "недозволений шлях"));
+    }
+    let m = match method.as_str() {
+        "GET" => reqwest::Method::GET,
+        "POST" => reqwest::Method::POST,
+        "PUT" => reqwest::Method::PUT,
+        "DELETE" => reqwest::Method::DELETE,
+        _ => return Err(err("invalid", "метод")),
+    };
+    lia_call(&state, m, &path, body).await
+}
+
+fn valid_pack_id(id: &str) -> Result<()> {
+    if id.len() == 12 && id.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(err("invalid", "ідентифікатор збірки"))
+    }
+}
+
+/// Опублікувати збірку друзям (або оновити вже опубліковану `pack_id`).
+#[tauri::command]
+pub async fn lia_publish(state: S<'_>, instance_id: String, visibility: String, description: String, pack_id: Option<String>) -> Result<Value> {
+    let ctx = state.ctx();
+    let inst = instances::get(&ctx.paths, &instance_id)?;
+    let bytes = crate::lia::export_mrpack(&ctx, &inst).await?;
+    let token = lia_account(&state).await?.1;
+    let base = crate::lia::api();
+    let q = [("visibility", visibility), ("description", description)];
+    let req = match &pack_id {
+        Some(id) => {
+            valid_pack_id(id)?;
+            state.http.put(format!("{base}/api/packs/{id}"))
+        }
+        None => state.http.post(format!("{base}/api/packs")),
+    };
+    crate::lia::parse(req.query(&q).bearer_auth(token).body(bytes).send().await?).await
+}
+
+async fn lia_download_pack(state: &AppState, ctx: &Ctx, id: &str) -> Result<(Value, PathBuf)> {
+    valid_pack_id(id)?;
+    let meta = lia_call(state, reqwest::Method::GET, &format!("/api/packs/{id}"), None).await?;
+    let token = lia_account(state).await?.1;
+    let resp = state.http.get(format!("{}/api/packs/{id}/file", crate::lia::api())).bearer_auth(token).send().await?;
+    if !resp.status().is_success() {
+        crate::lia::parse(resp).await?;
+        return Err(err("lia", "не вдалося завантажити збірку"));
+    }
+    let tmp = ctx.paths.temp().join(format!("lia-{id}-{}.mrpack", util::now_ms()));
+    if let Some(p) = tmp.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    std::fs::write(&tmp, resp.bytes().await?)?;
+    Ok((meta, tmp))
+}
+
+fn pack_label(meta: &Value) -> String {
+    format!("v{} · {}", meta["version"], meta["owner"].as_str().unwrap_or(""))
+}
+
+/// Встановити збірку друга як нову збірку.
+#[tauri::command]
+pub async fn lia_install_pack(state: S<'_>, pack_id: String) -> Result<Instance> {
+    let ctx = state.ctx();
+    let (meta, tmp) = lia_download_pack(&state, &ctx, &pack_id).await?;
+    let task = ctx.task(meta["name"].as_str().unwrap_or("").to_string());
+    let modpack = instances::ModpackRef {
+        project_id: format!("lia:{pack_id}"),
+        version_id: meta["version"].to_string(),
+        name: meta["name"].as_str().unwrap_or("").into(),
+        version_name: pack_label(&meta),
+        icon_url: None,
+    };
+    let r = modrinth::import_mrpack(&ctx, &tmp, Some(modpack), &task).await;
+    let _ = std::fs::remove_file(&tmp);
+    task.finish(&r);
+    state.app.emit("instances-changed", ()).ok();
+    r
+}
+
+/// Оновити збірку, встановлену зі збірки друга, до нової версії. Моди замінюються повністю,
+/// світи й налаштування лишаються.
+#[tauri::command]
+pub async fn lia_update_pack(state: S<'_>, instance_id: String) -> Result<Instance> {
+    let ctx = state.ctx();
+    let mut inst = instances::get(&ctx.paths, &instance_id)?;
+    let pack = crate::lia::pack_of(&inst).ok_or_else(|| err("invalid", "ця збірка не з ЛІЇ"))?;
+    if launch::get(&instance_id).is_some() {
+        return Err(err("already_running", "закрийте гру перед оновленням"));
+    }
+    let (meta, tmp) = lia_download_pack(&state, &ctx, &pack).await?;
+    let task = ctx.task_for(inst.name.clone(), &inst.id);
+    let r: Result<()> = async {
+        let mods = ctx.paths.game_dir(&inst.id).join("mods");
+        for e in std::fs::read_dir(&mods).into_iter().flatten().flatten() {
+            if e.path().is_file() {
+                std::fs::remove_file(e.path())?;
+            }
+        }
+        modrinth::apply_mrpack(&ctx, &tmp, &mut inst, &task).await?;
+        if let Some(m) = inst.modpack.as_mut() {
+            m.version_id = meta["version"].to_string();
+            m.version_name = pack_label(&meta);
+        }
+        instances::save(&ctx.paths, &inst)
+    }
+    .await;
+    let _ = std::fs::remove_file(&tmp);
+    task.finish(&r);
+    state.app.emit("instances-changed", ()).ok();
+    r.map(|_| inst)
+}
+
+/// Відкрити LAN-світ запущеної збірки друзям через ретранслятор ЛІЇ.
+#[tauri::command]
+pub async fn lia_share_world(state: S<'_>, instance_id: String, port: u16) -> Result<Value> {
+    let token = lia_account(&state).await?.1;
+    let app = state.app.clone();
+    let id = instance_id.clone();
+    let (code, address) = crate::lia::share(&instance_id, &token, port, move || {
+        app.emit("lia-share-ended", json!({ "instanceId": id })).ok();
+    })
+    .await?;
+    Ok(json!({ "code": code, "address": address }))
+}
+
+#[tauri::command]
+pub async fn lia_unshare(instance_id: String) -> Result<()> {
+    crate::lia::unshare(&instance_id);
+    Ok(())
+}

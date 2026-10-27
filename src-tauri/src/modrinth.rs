@@ -292,15 +292,16 @@ pub async fn install_modpack(ctx: &Ctx, version_id: &str, task: &Arc<Task>) -> R
     Ok(inst)
 }
 
-/// Імпорт файлу .mrpack: створює збірку, качає файли, розпаковує overrides, ставить модлоадер.
-pub async fn import_mrpack(ctx: &Ctx, path: &Path, modpack: Option<ModpackRef>, task: &Arc<Task>) -> Result<Instance> {
+fn read_index(path: &Path) -> Result<MrIndex> {
     let mut zip = zip::ZipArchive::new(std::fs::File::open(path).ctx(|| path.display().to_string())?)?;
-    let index: MrIndex = {
-        let mut e = zip.by_name("modrinth.index.json").map_err(|_| err("invalid_modpack", "це не модпак Modrinth (немає modrinth.index.json)"))?;
-        let mut s = String::new();
-        e.read_to_string(&mut s)?;
-        serde_json::from_str(&s)?
-    };
+    let mut e = zip.by_name("modrinth.index.json").map_err(|_| err("invalid_modpack", "це не модпак Modrinth (немає modrinth.index.json)"))?;
+    let mut s = String::new();
+    e.read_to_string(&mut s)?;
+    Ok(serde_json::from_str(&s)?)
+}
+
+/// Версія гри й модлоадер з індексу модпака.
+fn index_target(index: &MrIndex) -> Result<(String, String, Option<String>)> {
     let mc = index.dependencies.get("minecraft").cloned().ok_or_else(|| err("invalid_modpack", "у модпаку не вказано версію гри"))?;
     let (loader, loader_version) = [("fabric-loader", "fabric"), ("quilt-loader", "quilt"), ("neoforge", "neoforge"), ("forge", "forge")]
         .iter()
@@ -311,46 +312,20 @@ pub async fn import_mrpack(ctx: &Ctx, path: &Path, modpack: Option<ModpackRef>, 
         ("forge", Some(v)) if !v.starts_with(&format!("{mc}-")) => Some(format!("{mc}-{v}")),
         (_, v) => v,
     };
+    Ok((mc, loader, loader_version))
+}
 
+/// Імпорт файлу .mrpack: створює збірку, качає файли, розпаковує overrides, ставить модлоадер.
+pub async fn import_mrpack(ctx: &Ctx, path: &Path, modpack: Option<ModpackRef>, task: &Arc<Task>) -> Result<Instance> {
+    let index = read_index(path)?;
+    let (mc, loader, loader_version) = index_target(&index)?;
     let name = modpack.as_ref().map(|m| m.name.clone()).filter(|n| !n.is_empty()).unwrap_or(index.name.clone());
     let mut inst = instances::create(
         &ctx.paths,
-        NewInstance { name: name.chars().take(48).collect(), mc_version: mc.clone(), loader: loader.clone(), loader_version: loader_version.clone(), icon: Some("block:bookshelf".into()) },
+        NewInstance { name: name.chars().take(48).collect(), mc_version: mc, loader, loader_version, icon: Some("block:bookshelf".into()) },
     )?;
     let result: Result<()> = async {
-        let game = ctx.paths.game_dir(&inst.id);
-        let mut dls = Vec::new();
-        for f in &index.files {
-            if f.env.as_ref().and_then(|e| e.get("client")).is_some_and(|c| c == "unsupported") {
-                continue;
-            }
-            let dest = util::safe_join(&game, &f.path)?;
-            let url = f.downloads.iter().find(|u| allowed_host(u)).ok_or_else(|| err("invalid_modpack", format!("файл {} з недозволеного джерела", f.path)))?;
-            dls.push(Dl::new(url, dest, f.hashes.get("sha1").cloned(), f.file_size));
-        }
-        net::download_all(&ctx.http, dls, task, "modpack_files", ctx.concurrency, true).await?;
-
-        task.stage("modpack_overrides", 0, "");
-        for i in 0..zip.len() {
-            let mut e = zip.by_index(i)?;
-            let name = e.name()?.to_string();
-            let rel = name.strip_prefix("overrides/").or_else(|| name.strip_prefix("client-overrides/"));
-            let Some(rel) = rel.filter(|r| !r.is_empty()) else { continue };
-            let dest = util::safe_join(&game, rel)?;
-            if e.is_dir() {
-                std::fs::create_dir_all(&dest)?;
-                continue;
-            }
-            if let Some(p) = dest.parent() {
-                std::fs::create_dir_all(p)?;
-            }
-            let mut out = std::fs::File::create(&dest).ctx(|| dest.display().to_string())?;
-            std::io::copy(&mut e, &mut out)?;
-        }
-
-        if loader != "vanilla" {
-            inst.version_id = Some(loaders::install(ctx, &loader, &mc, loader_version.as_deref(), task).await?);
-        }
+        apply_mrpack(ctx, path, &mut inst, task).await?;
         let mut m = modpack.clone().unwrap_or_default();
         if m.version_name.is_empty() {
             m.version_name = index.version_id.clone();
@@ -367,6 +342,53 @@ pub async fn import_mrpack(ctx: &Ctx, path: &Path, modpack: Option<ModpackRef>, 
         return Err(e);
     }
     Ok(inst)
+}
+
+/// Накладає .mrpack на збірку: файли модпака, overrides, модлоадер. Світи й налаштування гравця не чіпає.
+pub async fn apply_mrpack(ctx: &Ctx, path: &Path, inst: &mut Instance, task: &Arc<Task>) -> Result<()> {
+    let index = read_index(path)?;
+    let (mc, loader, loader_version) = index_target(&index)?;
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(path).ctx(|| path.display().to_string())?)?;
+    let game = ctx.paths.game_dir(&inst.id);
+    let mut dls = Vec::new();
+    for f in &index.files {
+        if f.env.as_ref().and_then(|e| e.get("client")).is_some_and(|c| c == "unsupported") {
+            continue;
+        }
+        let dest = util::safe_join(&game, &f.path)?;
+        let url = f.downloads.iter().find(|u| allowed_host(u)).ok_or_else(|| err("invalid_modpack", format!("файл {} з недозволеного джерела", f.path)))?;
+        dls.push(Dl::new(url, dest, f.hashes.get("sha1").cloned(), f.file_size));
+    }
+    net::download_all(&ctx.http, dls, task, "modpack_files", ctx.concurrency, true).await?;
+
+    task.stage("modpack_overrides", 0, "");
+    for i in 0..zip.len() {
+        let mut e = zip.by_index(i)?;
+        let name = e.name()?.to_string();
+        let rel = name.strip_prefix("overrides/").or_else(|| name.strip_prefix("client-overrides/"));
+        let Some(rel) = rel.filter(|r| !r.is_empty()) else { continue };
+        let dest = util::safe_join(&game, rel)?;
+        if e.is_dir() {
+            std::fs::create_dir_all(&dest)?;
+            continue;
+        }
+        if let Some(p) = dest.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        let mut out = std::fs::File::create(&dest).ctx(|| dest.display().to_string())?;
+        std::io::copy(&mut e, &mut out)?;
+    }
+
+    let changed = inst.mc_version != mc || inst.loader != loader || inst.loader_version != loader_version;
+    inst.mc_version = mc.clone();
+    inst.loader = loader.clone();
+    inst.loader_version = loader_version.clone();
+    if loader == "vanilla" {
+        inst.version_id = None;
+    } else if changed || inst.version_id.is_none() {
+        inst.version_id = Some(loaders::install(ctx, &loader, &mc, loader_version.as_deref(), task).await?);
+    }
+    instances::save(&ctx.paths, inst)
 }
 
 /// Ідентифікація файлів за SHA1 (моди, додані вручну) — назви й іконки з Modrinth.

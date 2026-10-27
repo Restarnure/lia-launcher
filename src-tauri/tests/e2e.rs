@@ -2,7 +2,7 @@
 //! Мережа і ~1 ГБ на диску, тому лише вручну:
 //!   cargo test --test e2e -- --ignored --nocapture
 //! Версії: змінна LIA_E2E (через кому), напр. "26.3,1.12.2,fabric:1.21.11".
-//! Дані — у %TEMP%\lia-e2e (або LIA_E2E_DIR).
+//! Дані — у %TEMP%\lia-e2e (або LIA_E2E_DIR). LIA_E2E_LIA=1 — запуск з ЛІЯ ID (тестовий акаунт з tests/lia.rs).
 
 use lia_lib::ctx::Ctx;
 use lia_lib::launch::{self, Auth, Options};
@@ -63,16 +63,25 @@ async fn run_with(spec: &str, ctx: &Ctx, logs: Arc<Mutex<Vec<String>>>) -> Resul
     if let Some(install::LegacyAssets::Resources(pairs)) = &prep.legacy_assets {
         install::copy_assets(pairs, &game_dir.join("resources"), &task).map_err(|e| e.to_string())?;
     }
+    // LIA_E2E_LIA=1 — гра з ЛІЯ ID: authlib-injector, свій http.agent і токен тестового акаунта.
+    let (jvm_args, auth) = if std::env::var("LIA_E2E_LIA").is_ok() {
+        let acc = lia_lib::lia::login(&ctx.http, "LiaTestHost", "test-password-1").await.map_err(|e| format!("ЛІЯ ID: {e}"))?;
+        let jar = lia_lib::lia::injector(&ctx).await.map_err(|e| format!("injector: {e}"))?;
+        let token = acc.lia.unwrap().access_token;
+        (lia_lib::lia::jvm_args(&jar).to_vec(), Auth { name: acc.name, uuid: acc.uuid, token, user_type: "mojang", xuid: "0".into() })
+    } else {
+        (vec![], Auth { name: "LiaTest".into(), uuid: lia_lib::accounts::offline_uuid("LiaTest"), token: "0".into(), user_type: "legacy", xuid: "0".into() })
+    };
     let opts = Options {
         game_dir: game_dir.clone(),
         natives_dir: natives_dir.clone(),
         memory_mb: 2048,
-        jvm_args: vec![],
+        jvm_args,
         resolution: (854, 480),
         fullscreen: false,
         server: None,
         world: None,
-        auth: Auth { name: "LiaTest".into(), uuid: lia_lib::accounts::offline_uuid("LiaTest"), token: "0".into(), user_type: "legacy", xuid: "0".into() },
+        auth,
     };
     let args = launch::build_args(&prep, &ctx.paths, &opts);
     let (tx, rx) = std::sync::mpsc::channel();

@@ -286,8 +286,8 @@ p {
   height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
-  /* На широких моніторах вміст не розтягується далі 1480px — центруємо. */
-  padding: 28px max(34px, calc((100% - 1480px) / 2)) 40px;
+  /* На ультрашироких моніторах вміст не розтягується далі 2200px — центруємо. */
+  padding: 28px max(34px, calc((100% - 2200px) / 2)) 40px;
   animation: page-in 0.22s var(--ease);
 }
 
