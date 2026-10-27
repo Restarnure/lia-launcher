@@ -177,7 +177,7 @@ fn data(app: Arc<App>, mut host: TcpStream, id: &str) -> Option<Cont> {
 }
 
 fn host(app: Arc<App>, s: TcpStream, token: &str) -> Option<Cont> {
-    let user = api::token_user(&app, token, None)?;
+    let user = api::token_user(&app, token)?;
     // ponytail: без ліміту гравців на світ; додати, якщо хтось почне роздавати світ на сотні людей.
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     let code = {

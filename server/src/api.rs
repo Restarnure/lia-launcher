@@ -47,7 +47,7 @@ pub fn user_by(app: &App, col: &str, val: &str) -> Option<User> {
     app.db.lock().unwrap().query_row(&format!("SELECT {USER_COLS} FROM users WHERE {col} = ?1"), [val], row_user).ok()
 }
 
-fn user_by_id(app: &App, id: i64) -> Option<User> {
+pub fn user_by_id(app: &App, id: i64) -> Option<User> {
     app.db.lock().unwrap().query_row(&format!("SELECT {USER_COLS} FROM users WHERE id = ?1"), [id], row_user).ok()
 }
 
@@ -55,19 +55,17 @@ pub fn token_hash(token: &str) -> String {
     hex(&Sha1::digest(token.as_bytes()))
 }
 
-pub fn token_user(app: &App, token: &str, client: Option<&str>) -> Option<User> {
+/// Акаунт ЛІЯ ID за токеном лаунчера. Ігрові токени (передаються в гру й видні в процесах) сюди не підходять.
+pub fn token_user(app: &App, token: &str) -> Option<User> {
     let db = app.db.lock().unwrap();
-    let (id, c): (i64, String) = db.query_row("SELECT user, client FROM tokens WHERE hash = ?1", [token_hash(token)], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
-    if client.is_some_and(|x| !x.is_empty() && x != c) {
-        return None;
-    }
+    let id: i64 = db.query_row("SELECT user FROM tokens WHERE hash = ?1 AND profile IS NULL", [token_hash(token)], |r| r.get(0)).ok()?;
     db.query_row(&format!("SELECT {USER_COLS} FROM users WHERE id = ?1"), [id], row_user).ok()
 }
 
 /// Користувач за заголовком `Authorization: Bearer <токен>`.
-fn auth(app: &App, h: &HeaderMap) -> R<User> {
+pub fn auth(app: &App, h: &HeaderMap) -> R<User> {
     let t = h.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).unwrap_or("");
-    token_user(app, t, None).ok_or_else(|| ApiErr(StatusCode::UNAUTHORIZED, "Unauthorized", "увійдіть у ЛІЯ ID знову".into()))
+    token_user(app, t).ok_or_else(|| ApiErr(StatusCode::UNAUTHORIZED, "Unauthorized", "увійдіть у ЛІЯ ID знову".into()))
 }
 
 fn hash_password(pass: &str) -> R<String> {
@@ -120,8 +118,6 @@ fn public(app: &App, u: &User) -> Value {
 pub struct RegisterReq {
     name: String,
     password: String,
-    #[serde(rename = "clientToken")]
-    client_token: Option<String>,
 }
 
 pub async fn register(st: S, headers: HeaderMap, Json(r): Json<RegisterReq>) -> R<Json<Value>> {
@@ -140,12 +136,14 @@ pub async fn register(st: S, headers: HeaderMap, Json(r): Json<RegisterReq>) -> 
         return Err(internal(e));
     }
     let u = user_by(&st, "uuid", &uuid).ok_or_else(not_found)?;
-    Ok(Json(ygg::session(&st, &u, r.client_token, true)?))
+    Ok(Json(ygg::account_session(&st, &u)?))
 }
 
 pub async fn me(st: S, h: HeaderMap) -> R<Json<Value>> {
     let u = auth(&st, &h)?;
-    Ok(Json(public(&st, &u)))
+    let mut v = public(&st, &u);
+    v["profiles"] = json!(ygg::profiles_of(&st, u.id));
+    Ok(Json(v))
 }
 
 #[derive(Deserialize)]
@@ -347,7 +345,7 @@ pub struct WsQuery {
 }
 
 pub async fn ws(st: S, Query(q): Query<WsQuery>, up: WebSocketUpgrade) -> R<Response> {
-    let u = token_user(&st, &q.token, None).ok_or_else(|| forbidden("Invalid token."))?;
+    let u = token_user(&st, &q.token).ok_or_else(|| forbidden("Invalid token."))?;
     let app = st.0.clone();
     Ok(up.on_upgrade(move |sock| session_ws(app, u, sock)))
 }
@@ -380,7 +378,12 @@ fn clean_presence(app: &App, u: &User, v: &Value) -> Value {
     }
     if let Some(code) = v["world"]["code"].as_str() {
         if app.relay.owner(code) == Some(u.id) {
-            out["world"] = json!({ "code": code, "address": format!("{code}.{}:{}", app.cfg.play_domain, app.cfg.relay_port) });
+            // licensedOnly: хост грає з ліцензією без «Грати з друзями» — пірати в такий світ не зайдуть.
+            out["world"] = json!({
+                "code": code,
+                "address": format!("{code}.{}:{}", app.cfg.play_domain, app.cfg.relay_port),
+                "licensedOnly": v["world"]["licensedOnly"].as_bool().unwrap_or(false),
+            });
         }
     }
     out

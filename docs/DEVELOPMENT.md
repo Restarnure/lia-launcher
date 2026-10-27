@@ -84,7 +84,9 @@ Client ID схваленого застосунку Azure вшитий у `BUILT
 
 Оновити сервер: скопіювати `server/{Cargo.toml,Cargo.lock,src,Dockerfile}` у `/srv/lia/server` і `docker compose up -d --build`.
 
-Гра з ЛІЯ ID запускається з `-javaagent:authlib-injector.jar=https://lia.starnure.dev/yggdrasil` і `-Dhttp.agent=LIA-Launcher/…` (Cloudflare відсікає голий `Java/1.8…`).
+ЛІЯ ID — акаунт лаунчера (токен без профілю, `/api/…`). Гра входить ігровим профілем: офлайн-нік закріплюється за ЛІЯ ID (`/api/game/session`), ліцензія — лише кнопкою «З друзями», через join на сервері Mojang з serverId від ЛІЇ (`/api/game/challenge`), без передачі токена Mojang. Ігрові токени не відкривають `/api/…`. Невідомого гравця `hasJoined` перевіряє в Mojang і перепідписує профіль ключем ЛІЇ — так ліцензія без ЛІЇ заходить у світи гравців ЛІЇ.
+
+Така гра запускається з `-javaagent:authlib-injector.jar=https://lia.starnure.dev/yggdrasil` і `-Dhttp.agent=LIA-Launcher/…` (Cloudflare відсікає голий `Java/1.8…`).
 
 Перевірки:
 

@@ -34,6 +34,9 @@ pub struct App {
     pub public_pem: String,
     /// serverId → (uuid, нік, коли) для join/hasJoined.
     pub joins: Mutex<HashMap<String, (String, String, Instant)>>,
+    /// serverId перевірки ліцензії → (користувач, коли).
+    pub challenges: Mutex<HashMap<String, (i64, Instant)>>,
+    pub http: reqwest::Client,
     /// Відкриті WebSocket-и гравців: id користувача → канали.
     pub sockets: Mutex<HashMap<i64, Vec<mpsc::UnboundedSender<String>>>>,
     pub presence: Mutex<HashMap<i64, Value>>,
@@ -121,6 +124,8 @@ async fn main() {
         key,
         public_pem,
         joins: Mutex::new(HashMap::new()),
+        challenges: Mutex::new(HashMap::new()),
+        http: reqwest::Client::builder().timeout(Duration::from_secs(10)).user_agent("lia-server").build().expect("http"),
         sockets: Mutex::new(HashMap::new()),
         presence: Mutex::new(HashMap::new()),
         limits: Mutex::new(HashMap::new()),
@@ -133,6 +138,7 @@ async fn main() {
         loop {
             tokio::time::sleep(Duration::from_secs(60)).await;
             a.joins.lock().unwrap().retain(|_, v| v.2.elapsed() < Duration::from_secs(60));
+            a.challenges.lock().unwrap().retain(|_, v| v.1.elapsed() < Duration::from_secs(300));
             a.limits.lock().unwrap().retain(|_, v| v.1.elapsed() < Duration::from_secs(3600));
         }
     });
@@ -142,11 +148,8 @@ async fn main() {
 
     let ygg = Router::new()
         .route("/", get(ygg::meta))
-        .route("/authserver/authenticate", post(ygg::authenticate))
-        .route("/authserver/refresh", post(ygg::refresh))
         .route("/authserver/validate", post(ygg::validate))
         .route("/authserver/invalidate", post(ygg::invalidate))
-        .route("/authserver/signout", post(ygg::signout))
         .route("/sessionserver/session/minecraft/join", post(ygg::join))
         .route("/sessionserver/session/minecraft/hasJoined", get(ygg::has_joined))
         .route("/sessionserver/session/minecraft/profile/{uuid}", get(ygg::profile))
@@ -158,6 +161,9 @@ async fn main() {
         .route("/yggdrasil/", get(ygg::meta))
         .route("/textures/{hash}", get(api::texture))
         .route("/api/register", post(api::register))
+        .route("/api/login", post(ygg::login))
+        .route("/api/game/challenge", post(ygg::game_challenge))
+        .route("/api/game/session", post(ygg::game_session))
         .route("/api/me", get(api::me))
         .route("/api/me/password", post(api::change_password))
         .route("/api/me/skin", put(api::set_skin).delete(api::clear_skin))

@@ -5,6 +5,8 @@ import { api, type Account, type SkinInfo } from "../lib/api";
 import { t } from "../lib/i18n";
 import { fail, navigate, refreshAccounts, setState, useStore } from "../lib/store";
 import { confirmDialog, Empty, loadSkin, SkinHead, Switch } from "../components/ui";
+import { LiaIdCard } from "../components/LiaId";
+import { useLia } from "../lib/lia";
 
 export function Accounts() {
   const { accounts, selected } = useStore((s) => s.accounts);
@@ -28,6 +30,8 @@ export function Accounts() {
           {t("acc.add")}
         </button>
       </div>
+      <LiaIdCard />
+      <h3 style={{ margin: "22px 0 10px" }}>{t("acc.game_accounts")}</h3>
       {accounts.length === 0 ? (
         <div className="card">
           <Empty icon={<UserRound size={40} className="faint" />} title={t("acc.empty")} text={t("acc.empty_text")}>
@@ -54,7 +58,7 @@ export function Accounts() {
                   <b className="ellipsis" style={{ display: "block" }}>
                     {a.name}
                   </b>
-                  <span className={`badge ${a.kind === "offline" ? "" : "blue"}`}>{a.kind === "microsoft" ? t("acc.microsoft") : a.kind === "lia" ? t("acc.lia") : t("acc.offline")}</span>
+                  <span className={`badge ${a.kind === "offline" ? "" : "blue"}`}>{a.kind === "microsoft" ? t("acc.microsoft") : t("acc.offline")}</span>
                 </div>
                 {a.id === selected && (
                   <span className="badge green">
@@ -129,7 +133,9 @@ function SkinPanel({ account }: { account: Account }) {
     v.animation = anim;
   }, [walk]);
 
-  const ms = account.kind !== "offline";
+  const lia = useLia((s) => !!s.session);
+  // Скін ставиться на акаунт Microsoft, а офлайн-ніку — через ЛІЯ ID (його бачать гравці ЛІЇ).
+  const ms = account.kind === "microsoft" || lia;
 
   return (
     <div className="skin-panel card">

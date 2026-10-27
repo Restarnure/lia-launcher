@@ -183,9 +183,9 @@ export async function saveSettings(patch: Partial<Settings>) {
   }
 }
 
-export async function launch(id: string, server?: { host: string; port?: number }, world?: string) {
+export async function launch(id: string, server?: { host: string; port?: number }, world?: string, friends?: boolean) {
   try {
-    await api.launch(id, server, world);
+    await api.launch(id, server, world, friends);
   } catch (e) {
     fail(e);
   }

@@ -11,7 +11,7 @@ interface LiaState {
   online: boolean;
   friends: LiaFriends | null;
   /** Відкриті друзям світи: збірка → адреса. */
-  shares: Record<string, { code: string; address: string }>;
+  shares: Record<string, { code: string; address: string; licensedOnly: boolean }>;
   /** Лічильник змін стрічки й збірок — сторінки перезавантажують дані, коли він росте. */
   rev: number;
 }
@@ -58,7 +58,7 @@ function presence() {
     type: "presence",
     state: "playing",
     game: { name: inst.name, mcVersion: inst.mcVersion, loader: inst.loader, pack },
-    world: st.shares[inst.id] ? { code: st.shares[inst.id].code } : null,
+    world: st.shares[inst.id] ? { code: st.shares[inst.id].code, licensedOnly: st.shares[inst.id].licensedOnly } : null,
   };
 }
 
@@ -122,15 +122,12 @@ export async function refreshLia() {
 const LAN = /Started (?:serving )?on (\d{2,5})\b/;
 
 async function shareWorld(instanceId: string, port: number) {
-  const s = getState();
-  const acc = s.accounts.accounts.find((a) => a.id === s.accounts.selected);
-  // Світ перевіряє гравців через ЛІЯ ID лише тоді, коли гру запущено з акаунта ЛІЯ ID.
-  if (!st.session || acc?.kind !== "lia") return;
+  if (!st.session) return;
   try {
     const r = await api.liaShareWorld(instanceId, port);
     set({ shares: { ...st.shares, [instanceId]: r } });
     sendPresence();
-    toast("success", t("lia.world_shared"), t("lia.world_shared_text"));
+    toast("success", t("lia.world_shared"), r.licensedOnly ? t("lia.world_shared_licensed") : t("lia.world_shared_text"));
   } catch (e) {
     fail(e);
   }
@@ -159,7 +156,8 @@ export async function initLia() {
     setTimeout(sendPresence, 50);
   });
   await listen<{ instanceId: string }>("lia-share-ended", ({ payload }) => unshare(payload.instanceId));
-  await listen("accounts-changed", () => refreshLia());
+  await listen("lia-session", () => refreshLia());
+  await listen<{ message: string }>("lia-warning", ({ payload }) => toast("info", t("lia.warning"), payload.message));
   await refreshLia();
 }
 

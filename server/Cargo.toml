@@ -8,8 +8,10 @@ argon2 = "0.6.0"
 axum = { version = "0.8.9", features = ["ws", "macros"] }
 base64 = "0.23.1"
 futures = "0.3.34"
+md-5 = "0.10"
 png = "0.18.1"
 rand = "0.10.3"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 rsa = "0.9.10"
 rusqlite = { version = "0.41.0", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }

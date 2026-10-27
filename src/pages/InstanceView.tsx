@@ -9,6 +9,7 @@ import { back, fail, launch, navigate, toast, useStore, type InstanceTab } from 
 import { instanceMenu } from "../components/InstanceCard";
 import { confirmDialog, Empty, InstanceIcon, LoaderBadge, Menu, PlayButton, Switch } from "../components/ui";
 import { PublishButton } from "../components/Publish";
+import { FriendsPlayButton } from "../components/LiaId";
 import { Console } from "./Console";
 import { InstanceSettings } from "./InstanceSettings";
 
@@ -73,6 +74,7 @@ export function InstanceView({ id, tab }: { id: string; tab?: InstanceTab }) {
         </button>
         <PublishButton inst={inst} />
         <Menu items={instanceMenu(inst)} className="btn icon" />
+        <FriendsPlayButton inst={inst} />
         <PlayButton inst={inst} />
       </header>
 

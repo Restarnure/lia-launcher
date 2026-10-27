@@ -6,6 +6,7 @@ import { McText } from "../lib/mctext";
 import { fail, navigate, saveSettings, setState, toast, useInstanceTask, useStore } from "../lib/store";
 import { InstanceCard } from "../components/InstanceCard";
 import { Empty, InstanceIcon, PlayButton, Select, stageLabel } from "../components/ui";
+import { FriendsPlayButton } from "../components/LiaId";
 
 // Нотатки до оновлень потрібні лише для шапки: остання версія і її картинка.
 let newsCache: NewsEntry[] | null = null;
@@ -64,6 +65,7 @@ export function Home() {
                   minWidth={300}
                 />
               </div>
+              <FriendsPlayButton inst={current} />
               <PlayButton inst={current} />
             </div>
           ) : (

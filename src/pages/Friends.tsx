@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { Check, Download, Gamepad2, Plus, RefreshCw, Rss, Search, UserMinus, UserPlus, Users, X } from "lucide-react";
+import { Check, Download, Gamepad2, RefreshCw, Rss, Search, UserMinus, UserPlus, Users, X } from "lucide-react";
 import { api, type Instance, type LiaEvent, type LiaPack, type LiaUser } from "../lib/api";
 import { ago } from "../lib/format";
 import { t } from "../lib/i18n";
 import { installPack, loadFriends, useLia } from "../lib/lia";
 import { fail, getState, refreshInstances, setState, toast, useStore } from "../lib/store";
 import { confirmDialog, Empty, LoaderBadge } from "../components/ui";
+import { LiaIdCard } from "../components/LiaId";
 
 /** Голова зі скіна ЛІЯ ID (8×8 обличчя + шар). */
 export function LiaHead({ user, size = 36 }: { user: Pick<LiaUser, "skin" | "name">; size?: number }) {
@@ -49,9 +50,16 @@ async function joinFriend(u: LiaUser) {
   const p = u.presence;
   if (!p?.world) return;
   const s = getState();
-  const lia = s.accounts.accounts.find((a) => a.kind === "lia");
-  if (!lia) return;
-  if (s.accounts.selected !== lia.id) await api.selectAccount(lia.id);
+  const me = s.accounts.accounts.find((a) => a.id === s.accounts.selected);
+  if (!me) {
+    setState({ addAccountOpen: true });
+    return;
+  }
+  // Хост грає з ліцензією звичайним запуском: його світ перевіряє гостей через Mojang.
+  if (p.world.licensedOnly && me.kind === "offline") {
+    toast("error", t("lia.join_licensed_only"), t("lia.join_licensed_only_text"));
+    return;
+  }
   const g = p.game ?? {};
   let inst: Instance | undefined;
   if (g.pack) {
@@ -262,12 +270,10 @@ export function Friends() {
           <h1>{t("nav.friends")}</h1>
         </div>
         <div className="card">
-          <Empty icon={<Users size={40} className="faint" />} title={t("lia.need_title")} text={t("lia.need_text")}>
-            <button className="btn primary" onClick={() => setState({ addAccountOpen: true })}>
-              <Plus size={16} />
-              {t("lia.sign_in")}
-            </button>
-          </Empty>
+          <Empty icon={<Users size={40} className="faint" />} title={t("lia.need_title")} text={t("lia.need_text")} />
+        </div>
+        <div style={{ marginTop: 14 }}>
+          <LiaIdCard />
         </div>
       </div>
     );

@@ -37,17 +37,24 @@ assert req("POST", "/api/register", {"name": a.lower(), "password": "password1"}
 assert req("POST", "/api/register", {"name": "x", "password": "password1"})[0] == 400
 ta, tb = ra["accessToken"], rb["accessToken"]
 
-# Yggdrasil
+# вхід у ЛІЯ ID (токен акаунта) і ігровий профіль (токен гри)
+assert req("POST", "/api/login", {"name": a, "password": "bad"})[0] == 403
+s, login = req("POST", "/api/login", {"name": a, "password": "password1"})
+assert s == 200 and login["name"] == a, login
+nick = "Nick" + run
+s, game = req("POST", "/api/game/session", {"kind": "offline", "name": nick}, token=ta)
+assert s == 200 and game["name"] == nick, game
+assert req("POST", "/api/game/session", {"kind": "offline", "name": nick}, token=tb)[0] == 409  # нік чужий
+assert req("GET", "/api/me", token=game["accessToken"])[0] == 401  # токен гри не відкриває API акаунта
+s, me0 = req("GET", "/api/me", token=ta)
+assert me0["profiles"] == [{"name": nick, "kind": "offline"}], me0
+pid = game["uuid"]
 s, meta = req("GET", "/yggdrasil/")
-assert meta["meta"]["feature.non_email_login"] and "BEGIN PUBLIC KEY" in meta["signaturePublickey"]
-s, auth = req("POST", "/yggdrasil/authserver/authenticate", {"username": a, "password": "password1", "clientToken": "c1", "requestUser": True})
-assert s == 200 and auth["selectedProfile"]["name"] == a and auth["clientToken"] == "c1", auth
-assert req("POST", "/yggdrasil/authserver/authenticate", {"username": a, "password": "bad"})[0] == 403
-assert req("POST", "/yggdrasil/authserver/validate", {"accessToken": auth["accessToken"]})[0] == 204
-s, ref = req("POST", "/yggdrasil/authserver/refresh", {"accessToken": auth["accessToken"], "clientToken": "c1"})
-assert s == 200 and ref["accessToken"] != auth["accessToken"]
-assert req("POST", "/yggdrasil/authserver/validate", {"accessToken": auth["accessToken"]})[0] == 403
-pid = ref["selectedProfile"]["id"]
+assert "BEGIN PUBLIC KEY" in meta["signaturePublickey"] and ".minecraft.net" in meta["skinDomains"], meta
+assert req("POST", "/yggdrasil/authserver/validate", {"accessToken": game["accessToken"]})[0] == 204
+assert req("POST", "/yggdrasil/authserver/validate", {"accessToken": ta})[0] == 403
+# токен акаунта не годиться для входу в гру
+assert req("POST", "/yggdrasil/sessionserver/session/minecraft/join", {"accessToken": ta, "selectedProfile": pid, "serverId": "x"})[0] == 403
 
 # скін
 def make_png(w, h):
@@ -64,8 +71,8 @@ s, tex = req("GET", me["skin"][len(B):])
 assert s == 200 and tex == png
 
 # join / hasJoined з перевіркою підпису
-assert req("POST", "/yggdrasil/sessionserver/session/minecraft/join", {"accessToken": ref["accessToken"], "selectedProfile": pid, "serverId": "srv1"})[0] == 204
-s, prof = req("GET", f"/yggdrasil/sessionserver/session/minecraft/hasJoined?username={a}&serverId=srv1")
+assert req("POST", "/yggdrasil/sessionserver/session/minecraft/join", {"accessToken": game["accessToken"], "selectedProfile": pid, "serverId": "srv1"})[0] == 204
+s, prof = req("GET", f"/yggdrasil/sessionserver/session/minecraft/hasJoined?username={nick}&serverId=srv1")
 assert s == 200 and prof["id"] == pid, (s, prof)
 p = prof["properties"][0]
 val = json.loads(base64.b64decode(p["value"]))
@@ -75,11 +82,14 @@ open(os.path.join(HERE, "val.bin"), "wb").write(p["value"].encode())
 open(os.path.join(HERE, "sig.bin"), "wb").write(base64.b64decode(p["signature"]))
 v = subprocess.run(["openssl", "dgst", "-sha1", "-verify", "pub.pem", "-signature", "sig.bin", "val.bin"], cwd=HERE, capture_output=True, text=True)
 assert "Verified OK" in v.stdout, v
-assert req("GET", f"/yggdrasil/sessionserver/session/minecraft/hasJoined?username={a}&serverId=srv1")[0] == 204  # одноразово
+assert req("GET", f"/yggdrasil/sessionserver/session/minecraft/hasJoined?username={nick}&serverId=srv1")[0] == 204  # одноразово, далі — Mojang, який такого не знає
+# ліцензійний гравець без ЛІЇ: профіль і скін з Mojang, перепідписані нашим ключем
+s, notch = req("GET", "/yggdrasil/sessionserver/session/minecraft/profile/069a79f444e94726a5befca90e38aaf5?unsigned=false")
+assert s == 200 and notch["name"] == "Notch" and notch["properties"][0]["signature"], (s, notch)
 s, prof2 = req("GET", f"/yggdrasil/sessionserver/session/minecraft/profile/{pid}")
 assert s == 200 and "signature" not in prof2["properties"][0]
-s, names = req("POST", "/yggdrasil/api/profiles/minecraft", [a, b, "nobody"])
-assert len(names) == 2
+s, names = req("POST", "/yggdrasil/api/profiles/minecraft", [nick, b, "nobody"])
+assert len(names) == 1, names
 
 # друзі
 assert req("POST", f"/api/friends/{b}", token=ta)[0] == 204

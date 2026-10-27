@@ -6,7 +6,7 @@
 //! ЛІЯ ID, що заходить за адресою світу. Потрібні:
 //!   LIA_TEST_SERVER_JAR — paper-1.21.4-*.jar, LIA_TEST_JAVA — java 21, LIA_TEST_BOT — bot.js
 //!   (minecraft-protocol; входить логіном/паролем через Yggdrasil ЛІЇ, друкує BOT_OK).
-//! Використовує тестові акаунти LiaTestHost і LiaTestGuest (створює, якщо їх немає).
+//! Використовує тестові акаунти ЛІЯ ID LiaTestHost і LiaTestGuest (створює, якщо їх немає) і нік LiaTestPirate.
 //!
 //! `pack_roundtrip` — експорт збірки в .mrpack (мод з Modrinth посиланням, свій мод і config файлами)
 //! і встановлення назад, як це робить друг.
@@ -40,15 +40,16 @@ async fn world_through_relay() {
     let account = |name: &'static str, pass: &'static str| {
         let http = ctx.http.clone();
         async move {
-            match lia::login(&http, name, pass).await {
-                Ok(a) => a,
-                Err(_) => lia::register(&http, name, pass).await.expect("реєстрація"),
+            match lia::login(&http, name, pass, false).await {
+                Ok(s) => s,
+                Err(_) => lia::login(&http, name, pass, true).await.expect("реєстрація"),
             }
         }
     };
     let host = account("LiaTestHost", "test-password-1").await;
-    let guest_name = "LiaTestGuest".to_string();
-    account("LiaTestGuest", "test-password-2").await;
+    let guest = account("LiaTestGuest", "test-password-2").await;
+    // Гість — офлайн-нік; гра входила б через ЛІЮ так само.
+    let (guest_token, guest_uuid, guest_name) = lia::game_session(&ctx.http, &guest, &lia_lib::accounts::offline("LiaTestPirate").unwrap()).await.expect("сесія гостя");
 
     // Ті самі аргументи JVM, що й у гри з ЛІЯ ID.
     let jar = lia::injector(&ctx).await.expect("authlib-injector");
@@ -86,11 +87,11 @@ async fn world_through_relay() {
     }
     println!("  сервер готовий за {:?}", t0.elapsed());
 
-    let token = host.lia.as_ref().unwrap().access_token.clone();
+    let token = host.token.clone();
     let (code, address) = lia::share("test", &token, 25599, || {}).await.expect("ретранслятор");
     println!("  світ відкрито: {code} → {address}");
     let (h, p) = address.split_once(':').unwrap();
-    let bot = Command::new("node").args([&env("LIA_TEST_BOT"), h, p, &guest_name, "test-password-2", &lia::api()]).output().expect("бот");
+    let bot = Command::new("node").args([&env("LIA_TEST_BOT"), h, p, &guest_name, &guest_token, &guest_uuid, &lia::api()]).output().expect("бот");
     let bot_out = String::from_utf8_lossy(&bot.stdout).to_string();
     println!("  бот: {}", bot_out.trim());
 

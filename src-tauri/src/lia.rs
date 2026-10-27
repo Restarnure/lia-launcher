@@ -1,10 +1,14 @@
-//! ЛІЯ ID і соцмережа: вхід (Yggdrasil-сумісний сервер ЛІЇ), authlib-injector для гри,
-//! ретранслятор LAN-світів з боку хоста, експорт збірки в .mrpack для публікації друзям.
+//! ЛІЯ ID і соцмережа. ЛІЯ ID — акаунт лаунчера (друзі, збірки, скін для гравців ЛІЇ), окремо від
+//! ігрових акаунтів. Гра входить через authlib-injector ігровим профілем: офлайн-ніком (завжди, коли
+//! є ЛІЯ ID) або ліцензією (кнопка «Грати з друзями»). Тут же ретранслятор LAN-світів з боку хоста
+//! й експорт збірки в .mrpack.
 use crate::accounts::Account;
+use crate::crypto;
 use crate::ctx::Ctx;
-use crate::error::{err, Context, Error, Result};
+use crate::error::{err, Context, Result};
 use crate::instances::Instance;
 use crate::net::{self, Dl};
+use crate::paths::Paths;
 use crate::{modrinth, util};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -26,11 +30,52 @@ fn relay() -> String {
     std::env::var("LIA_RELAY").unwrap_or_else(|_| "relay.play.lia.starnure.dev:25570".into())
 }
 
+/// Токени акаунтів ЛІЯ ID з 1.1.0, коли ЛІЯ ID був ігровим акаунтом. Лише для переносу в сесію.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct LiaTokens {
     pub access_token: String,
+    #[serde(default)]
     pub client_token: String,
+}
+
+/// Вхід у ЛІЯ ID на цьому ПК. Зберігається зашифрованим, як і акаунти.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Session {
+    pub name: String,
+    pub token: String,
+}
+
+fn session_path() -> PathBuf {
+    Paths::config_home().join("lia.dat")
+}
+
+pub fn session() -> Option<Session> {
+    let b = std::fs::read(session_path()).ok()?;
+    serde_json::from_slice(&crypto::open(&b).ok()?).ok()
+}
+
+pub fn set_session(s: Option<&Session>) -> Result<()> {
+    match s {
+        Some(s) => util::write_atomic(&session_path(), &crypto::seal(&serde_json::to_vec(s)?)?),
+        None => {
+            let _ = std::fs::remove_file(session_path());
+            Ok(())
+        }
+    }
+}
+
+/// 1.1.0 → 1.1.1: акаунти «ЛІЯ ID» прибираються з ігрових, їхній токен стає сесією лаунчера.
+/// `true` — список акаунтів змінився.
+pub fn migrate(accounts: &mut Vec<Account>) -> bool {
+    let Some(i) = accounts.iter().position(|a| a.kind == "lia") else { return false };
+    if session().is_none() {
+        if let Some(t) = &accounts[i].lia {
+            let _ = set_session(Some(&Session { name: accounts[i].name.clone(), token: t.access_token.clone() }));
+        }
+    }
+    accounts.retain(|a| a.kind != "lia");
+    true
 }
 
 /// Запит до API ЛІЇ. Помилки сервера ({errorMessage}) — людським текстом.
@@ -55,56 +100,60 @@ pub async fn parse(resp: reqwest::Response) -> Result<Value> {
     let msg = serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| v["errorMessage"].as_str().map(str::to_string)).unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
     Err(match status.as_u16() {
         401 => err("lia_auth", "увійдіть у ЛІЯ ID знову"),
-        403 if msg.contains("Invalid token") => err("lia_auth", "увійдіть у ЛІЯ ID знову"),
         _ => err("lia", msg),
     })
 }
 
-fn account_from(v: &Value) -> Result<Account> {
-    let p = &v["selectedProfile"];
-    let (Some(id), Some(name)) = (p["id"].as_str(), p["name"].as_str()) else {
-        return Err(err("lia", "сервер ЛІЇ повернув неочікувану відповідь"));
-    };
-    Ok(Account {
-        id: format!("lia-{id}"),
-        kind: "lia".into(),
-        name: name.into(),
-        uuid: id.into(),
-        added: util::now_ms(),
-        ms: None,
-        lia: Some(LiaTokens { access_token: v["accessToken"].as_str().unwrap_or("").into(), client_token: v["clientToken"].as_str().unwrap_or("").into() }),
-    })
+/// Вхід або реєстрація ЛІЯ ID. Зберігає сесію викликач (`set_session`).
+pub async fn login(http: &reqwest::Client, name: &str, password: &str, register: bool) -> Result<Session> {
+    let path = if register { "/api/register" } else { "/api/login" };
+    let v = call(http, reqwest::Method::POST, path, None, Some(json!({ "name": name.trim(), "password": password }))).await?;
+    Ok(Session { name: v["name"].as_str().unwrap_or(name).to_string(), token: v["accessToken"].as_str().unwrap_or("").to_string() })
 }
 
-fn client_token() -> String {
-    hex::encode(rand::random::<[u8; 16]>())
-}
-
-pub async fn login(http: &reqwest::Client, name: &str, password: &str) -> Result<Account> {
-    let v = call(http, reqwest::Method::POST, "/yggdrasil/authserver/authenticate", None, Some(json!({ "username": name.trim(), "password": password, "clientToken": client_token(), "requestUser": false }))).await?;
-    account_from(&v)
-}
-
-pub async fn register(http: &reqwest::Client, name: &str, password: &str) -> Result<Account> {
-    let v = call(http, reqwest::Method::POST, "/api/register", None, Some(json!({ "name": name.trim(), "password": password, "clientToken": client_token() }))).await?;
-    account_from(&v)
-}
-
-/// Перевіряє токен перед грою; протермінований оновлює. `true` — токен змінився.
-pub async fn ensure_fresh(http: &reqwest::Client, acc: &mut Account) -> Result<bool> {
-    let Some(t) = acc.lia.clone() else { return Ok(false) };
-    let body = json!({ "accessToken": t.access_token, "clientToken": t.client_token });
-    match call(http, reqwest::Method::POST, "/yggdrasil/authserver/validate", None, Some(body.clone())).await {
-        Ok(_) => Ok(false),
-        Err(Error::Coded { code: "lia_auth", .. }) => {
-            let v = call(http, reqwest::Method::POST, "/yggdrasil/authserver/refresh", None, Some(body)).await?;
-            let fresh = account_from(&v)?;
-            acc.name = fresh.name;
-            acc.lia = fresh.lia;
-            Ok(true)
+/// Ігровий вхід через ЛІЮ для запуску гри: (токен гри, UUID без дефісів, нік).
+/// Офлайн-нік закріплюється за ЛІЯ ID; ліцензію доводимо join-ом на сервері Mojang з serverId від ЛІЇ —
+/// токен Mojang нікуди, крім Mojang, не йде.
+pub async fn game_session(http: &reqwest::Client, s: &Session, account: &Account) -> Result<(String, String, String)> {
+    let body = match (&account.kind[..], &account.ms) {
+        ("offline", _) => json!({ "kind": "offline", "name": account.name }),
+        ("microsoft", Some(ms)) => {
+            let c = call(http, reqwest::Method::POST, "/api/game/challenge", Some(&s.token), None).await?;
+            let sid = c["serverId"].as_str().unwrap_or("").to_string();
+            let resp = http
+                .post("https://sessionserver.mojang.com/session/minecraft/join")
+                .json(&json!({ "accessToken": ms.access_token, "selectedProfile": account.uuid, "serverId": sid }))
+                .send()
+                .await?;
+            if !resp.status().is_success() {
+                return Err(err("lia", "Mojang не прийняв вхід — перезайдіть в акаунт Microsoft"));
+            }
+            json!({ "kind": "mojang", "name": account.name, "serverId": sid })
         }
-        Err(e) => Err(e),
+        _ => return Err(err("invalid", "цей акаунт не може грати через ЛІЮ")),
+    };
+    let v = call(http, reqwest::Method::POST, "/api/game/session", Some(&s.token), Some(body)).await?;
+    let get = |k: &str| v[k].as_str().unwrap_or("").to_string();
+    Ok((get("accessToken"), get("uuid"), get("name")))
+}
+
+/// Збірки, запущені з входом через ЛІЮ (у їхні LAN-світи можуть зайти й пірати).
+fn lia_games() -> &'static Mutex<std::collections::HashSet<String>> {
+    static S: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+pub fn set_lia_game(instance: &str, on: bool) {
+    let mut s = lia_games().lock().unwrap();
+    if on {
+        s.insert(instance.to_string());
+    } else {
+        s.remove(instance);
     }
+}
+
+pub fn is_lia_game(instance: &str) -> bool {
+    lia_games().lock().unwrap().contains(instance)
 }
 
 // ---------------------------------------------------------------- authlib-injector

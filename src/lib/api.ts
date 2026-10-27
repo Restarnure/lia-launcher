@@ -122,7 +122,7 @@ export interface GameEvent {
 
 export interface Account {
   id: string;
-  kind: "microsoft" | "offline" | "lia";
+  kind: "microsoft" | "offline";
   name: string;
   uuid: string;
   added: number;
@@ -280,15 +280,13 @@ export interface LiaSession {
   api: string;
   token: string;
   name: string;
-  uuid: string;
-  accountId: string;
 }
 
 export interface LiaPresence {
   state: "online" | "playing";
   since: number;
   game?: { name?: string | null; mcVersion?: string | null; loader?: string | null; pack?: string | null };
-  world?: { code: string; address: string };
+  world?: { code: string; address: string; licensedOnly?: boolean };
 }
 
 export interface LiaUser {
@@ -362,7 +360,7 @@ export const api = {
   instanceDelete: (id: string) => invoke<void>("instance_delete", { id }),
   instanceDuplicate: (id: string, suffix: string) => invoke<Instance>("instance_duplicate", { id, suffix }),
   instanceFolder: (id: string, sub?: string) => invoke<string>("instance_folder", { id, sub }),
-  launch: (id: string, server?: { host: string; port?: number }, world?: string) => invoke<void>("instance_launch", { id, server, world }),
+  launch: (id: string, server?: { host: string; port?: number }, world?: string, friends?: boolean) => invoke<void>("instance_launch", { id, server, world, friends }),
   repair: (id: string) => invoke<void>("instance_repair", { id }),
   kill: (id: string) => invoke<boolean>("instance_kill", { id }),
   gameLog: (id: string) => invoke<LogLine[]>("game_log", { id }),
@@ -416,13 +414,14 @@ export const api = {
 
   news: () => invoke<NewsEntry[]>("news_list"),
 
-  loginLia: (name: string, password: string, register: boolean) => invoke<Account>("account_login_lia", { name, password, register }),
+  liaLogin: (name: string, password: string, register: boolean) => invoke<{ name: string }>("lia_login", { name, password, register }),
+  liaLogout: () => invoke<void>("lia_logout"),
   liaSession: () => invoke<LiaSession | null>("lia_session"),
   lia: <T = Json>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown) => invoke<T>("lia_request", { method, path, body }),
   liaPublish: (instanceId: string, visibility: "friends" | "public", description: string, packId?: string | null) =>
     invoke<LiaPack>("lia_publish", { instanceId, visibility, description, packId }),
   liaInstallPack: (packId: string) => invoke<Instance>("lia_install_pack", { packId }),
   liaUpdatePack: (instanceId: string) => invoke<Instance>("lia_update_pack", { instanceId }),
-  liaShareWorld: (instanceId: string, port: number) => invoke<{ code: string; address: string }>("lia_share_world", { instanceId, port }),
+  liaShareWorld: (instanceId: string, port: number) => invoke<{ code: string; address: string; licensedOnly: boolean }>("lia_share_world", { instanceId, port }),
   liaUnshare: (instanceId: string) => invoke<void>("lia_unshare", { instanceId }),
 };

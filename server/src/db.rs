@@ -55,8 +55,23 @@ pub fn open(path: &Path) -> Connection {
             data TEXT NOT NULL,
             created INTEGER NOT NULL
          );
-         CREATE INDEX IF NOT EXISTS events_user ON events(user, id);",
+         CREATE INDEX IF NOT EXISTS events_user ON events(user, id);
+         CREATE TABLE IF NOT EXISTS profiles (
+            id INTEGER PRIMARY KEY,
+            user INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            uuid TEXT NOT NULL UNIQUE,
+            kind TEXT NOT NULL,
+            mojang_skin TEXT,
+            mojang_slim INTEGER NOT NULL DEFAULT 0,
+            created INTEGER NOT NULL
+         );",
     )
     .expect("схема бази");
+    // 1.1.1: токени гри прив'язані до ігрового профілю; токени акаунта — без нього.
+    let has_profile: bool = c.prepare("SELECT 1 FROM pragma_table_info('tokens') WHERE name = 'profile'").unwrap().exists([]).unwrap();
+    if !has_profile {
+        c.execute_batch("ALTER TABLE tokens ADD COLUMN profile INTEGER REFERENCES profiles(id) ON DELETE CASCADE;").expect("міграція tokens");
+    }
     c
 }

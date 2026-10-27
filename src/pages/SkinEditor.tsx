@@ -69,7 +69,8 @@ export interface EditorStart {
 }
 
 export function SkinEditor({ start }: { start?: EditorStart }) {
-  const tex = useRef<HTMLCanvasElement>(document.createElement("canvas"));
+  // Одразу 64×64: типове полотно браузера 300×150 skinview3d прийняв би за старий скін 64×32.
+  const tex = useRef<HTMLCanvasElement>(Object.assign(document.createElement("canvas"), { width: 64, height: 64 }));
   const [rev, setRev] = useState(0);
   const bump = useCallback(() => setRev((r) => r + 1), []);
   const undo = useRef<ImageData[]>([]);
@@ -363,32 +364,36 @@ export function SkinEditor({ start }: { start?: EditorStart }) {
 
       <div className="editor">
         <div className="editor-tools card">
+          <div className="editor-label">{t("editor.tools")}</div>
           {TOOLS.map((tl) => (
-            <button key={tl.id} className={`tool ${tool === tl.id ? "on" : ""}`} title={`${t(tl.label)} (${tl.key.toUpperCase()})`} onClick={() => setTool(tl.id)}>
+            <button key={tl.id} className={`tool ${tool === tl.id ? "on" : ""}`} onClick={() => setTool(tl.id)}>
               {tl.icon}
+              <span className="grow">{t(tl.label)}</span>
+              <kbd>{tl.key.toUpperCase()}</kbd>
             </button>
           ))}
-          <div className="tool-sep" />
-          <button className={`tool ${mirrorOn ? "on" : ""}`} title={`${t("editor.mirror")} (M)`} onClick={() => setMirrorOn((v) => !v)}>
+          <div className="editor-label">{t("editor.size")}</div>
+          <div className="tool-sizes">
+            {[1, 2, 3, 4].map((n) => (
+              <button key={n} className={`tool size ${size === n ? "on" : ""}`} title={`${n}×${n} ([ ])`} onClick={() => setSize(n)}>
+                <span style={{ width: 2 + n * 3, height: 2 + n * 3 }} />
+              </button>
+            ))}
+          </div>
+          <button className={`tool ${mirrorOn ? "on" : ""}`} onClick={() => setMirrorOn((v) => !v)}>
             <FlipHorizontal2 size={18} />
+            <span className="grow">{t("editor.mirror")}</span>
+            <kbd>M</kbd>
           </button>
-          <button className={`tool ${grid ? "on" : ""}`} title={t("editor.grid")} onClick={() => setGrid((v) => !v)}>
-            <Grid3x3 size={18} />
-          </button>
-          <div className="tool-sep" />
-          {[1, 2, 3, 4].map((n) => (
-            <button key={n} className={`tool size ${size === n ? "on" : ""}`} title={`${t("editor.size")} ${n} ([ ])`} onClick={() => setSize(n)}>
-              <span style={{ width: 3 + n * 3, height: 3 + n * 3 }} />
-            </button>
-          ))}
         </div>
 
-        <Viewport3D tex={tex.current} rev={rev} slim={slim} layer={layer} showOuter={showOuter} hidden={hidden} pose={pose} onDown={beginStroke} onMove={paintLine} onUp={endStroke} />
+        <Viewport3D tex={tex.current} rev={rev} slim={slim} layer={layer} showOuter={showOuter} hidden={hidden} pose={pose} status={`${t(TOOLS.find((x) => x.id === tool)!.label)} · ${t(layer === "inner" ? "editor.layer_inner" : "editor.layer_outer")}${mirrorOn ? ` · ${t("editor.mirror")}` : ""}`} onDown={beginStroke} onMove={paintLine} onUp={endStroke} />
 
         <div className="editor-side">
-          <Flat tex={tex.current} rev={rev} slim={slim} grid={grid} layer={layer} onDown={beginStroke} onMove={paintLine} onUp={endStroke} />
+          <Flat tex={tex.current} rev={rev} slim={slim} grid={grid} onGrid={() => setGrid((v) => !v)} layer={layer} onDown={beginStroke} onMove={paintLine} onUp={endStroke} />
 
           <div className="card pad editor-panel">
+            <div className="editor-label">{t("editor.color")}</div>
             <div className="row" style={{ gap: 10 }}>
               <input type="color" className="color-well" value={hex(color)} onChange={(e) => setColor(parseHex(e.target.value)!)} />
               <input
@@ -421,6 +426,7 @@ export function SkinEditor({ start }: { start?: EditorStart }) {
           </div>
 
           <div className="card pad editor-panel">
+            <div className="editor-label">{t("editor.what")}</div>
             <div className="set-row">
               <span className="grow">{t("editor.layer")}</span>
               <Seg
@@ -454,6 +460,9 @@ export function SkinEditor({ start }: { start?: EditorStart }) {
               <span className="grow">{t("editor.pose")}</span>
               <Switch on={pose} onChange={setPose} />
             </div>
+            <span className="faint" style={{ fontSize: 12.5 }}>
+              {t("editor.parts_visible")}
+            </span>
             <div className="parts">
               {PARTS.map((p) => (
                 <button key={p} className={`chip ${hidden.has(p) ? "" : "on"}`} onClick={() => togglePart(p)}>
@@ -461,7 +470,6 @@ export function SkinEditor({ start }: { start?: EditorStart }) {
                 </button>
               ))}
             </div>
-            <p className="hint">{t("editor.hint")}</p>
           </div>
         </div>
       </div>
@@ -481,6 +489,7 @@ function Viewport3D(props: {
   showOuter: boolean;
   hidden: Set<Part>;
   pose: boolean;
+  status: string;
   onDown: (x: number, y: number, alt: boolean) => void;
   onMove: (x: number, y: number) => void;
   onUp: () => void;
@@ -505,15 +514,22 @@ function Viewport3D(props: {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Текстура: копіюємо полотно редактора в текстуру моделі без перестворення.
+  // Текстура: копіюємо полотно редактора в текстуру моделі піксель у піксель, без перестворення.
+  // Якщо текстура моделі не 64×64 (напр. створена до завантаження скіна), перебудовуємо її —
+  // інакше масштабування розмиває пікселі.
   useEffect(() => {
     const v = viewer.current;
     if (!v) return;
+    if (v.skinCanvas.width !== 64 || v.skinCanvas.height !== 64) {
+      v.loadSkin(props.tex, { model: props.slim ? "slim" : "default" });
+      return;
+    }
     const g = v.skinCanvas.getContext("2d")!;
-    g.clearRect(0, 0, v.skinCanvas.width, v.skinCanvas.height);
-    g.drawImage(props.tex, 0, 0, v.skinCanvas.width, v.skinCanvas.height);
+    g.imageSmoothingEnabled = false;
+    g.clearRect(0, 0, 64, 64);
+    g.drawImage(props.tex, 0, 0);
     if (v.playerObject.skin.map) v.playerObject.skin.map.needsUpdate = true;
-  }, [props.rev, props.tex]);
+  }, [props.rev, props.tex]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     viewer.current?.loadSkin(props.tex, { model: props.slim ? "slim" : "default" });
@@ -526,10 +542,14 @@ function Viewport3D(props: {
     for (const p of PARTS) skin[p].visible = !props.hidden.has(p);
     // Розведені руки й ноги відкривають внутрішні грані.
     const a = props.pose ? 0.45 : 0;
-    skin.rightArm.rotation.z = a;
-    skin.leftArm.rotation.z = -a;
-    skin.rightLeg.rotation.z = props.pose ? 0.12 : 0;
-    skin.leftLeg.rotation.z = props.pose ? -0.12 : 0;
+    // Поворот навколо плеча заводить внутрішній верхній кут руки в тулуб — тож у позі відсуваємо руки на піксель.
+    for (const [arm, dir] of [[skin.rightArm, -1], [skin.leftArm, 1]] as const) {
+      arm.userData.baseX ??= arm.position.x;
+      arm.position.x = arm.userData.baseX + (props.pose ? dir : 0);
+      arm.rotation.z = dir * a;
+    }
+    skin.rightLeg.rotation.z = props.pose ? -0.12 : 0;
+    skin.leftLeg.rotation.z = props.pose ? 0.12 : 0;
   }, [props.showOuter, props.layer, props.hidden, props.pose]);
 
   // Піксель текстури під курсором: перетин променя з видимими гранями обраного шару.
@@ -580,6 +600,8 @@ function Viewport3D(props: {
       }}
     >
       <canvas ref={canvas} />
+      <div className="editor-status">{props.status}</div>
+      <div className="editor-legend">{t("editor.legend")}</div>
       <button
         className="btn ghost sm icon editor-reset"
         title={t("editor.reset_view")}
@@ -600,6 +622,7 @@ function Flat(props: {
   rev: number;
   slim: boolean;
   grid: boolean;
+  onGrid: () => void;
   layer: Layer;
   onDown: (x: number, y: number, alt: boolean) => void;
   onMove: (x: number, y: number) => void;
@@ -659,6 +682,13 @@ function Flat(props: {
 
   return (
     <div className="card editor-flat">
+      <div className="row" style={{ marginBottom: 8 }}>
+        <span className="editor-label grow">{t("editor.flat")}</span>
+        <button className={`btn ghost sm ${props.grid ? "on" : ""}`} onClick={props.onGrid}>
+          <Grid3x3 size={14} />
+          {t("editor.grid")}
+        </button>
+      </div>
       <canvas
         ref={canvas}
         width={SIZE}

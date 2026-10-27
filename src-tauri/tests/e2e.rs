@@ -65,10 +65,11 @@ async fn run_with(spec: &str, ctx: &Ctx, logs: Arc<Mutex<Vec<String>>>) -> Resul
     }
     // LIA_E2E_LIA=1 — гра з ЛІЯ ID: authlib-injector, свій http.agent і токен тестового акаунта.
     let (jvm_args, auth) = if std::env::var("LIA_E2E_LIA").is_ok() {
-        let acc = lia_lib::lia::login(&ctx.http, "LiaTestHost", "test-password-1").await.map_err(|e| format!("ЛІЯ ID: {e}"))?;
+        let s = lia_lib::lia::login(&ctx.http, "LiaTestHost", "test-password-1", false).await.map_err(|e| format!("ЛІЯ ID: {e}"))?;
+        let nick = lia_lib::accounts::offline("LiaTestNick").map_err(|e| e.to_string())?;
+        let (token, uuid, name) = lia_lib::lia::game_session(&ctx.http, &s, &nick).await.map_err(|e| format!("сесія гри: {e}"))?;
         let jar = lia_lib::lia::injector(&ctx).await.map_err(|e| format!("injector: {e}"))?;
-        let token = acc.lia.unwrap().access_token;
-        (lia_lib::lia::jvm_args(&jar).to_vec(), Auth { name: acc.name, uuid: acc.uuid, token, user_type: "mojang", xuid: "0".into() })
+        (lia_lib::lia::jvm_args(&jar).to_vec(), Auth { name, uuid, token, user_type: "mojang", xuid: "0".into() })
     } else {
         (vec![], Auth { name: "LiaTest".into(), uuid: lia_lib::accounts::offline_uuid("LiaTest"), token: "0".into(), user_type: "legacy", xuid: "0".into() })
     };
