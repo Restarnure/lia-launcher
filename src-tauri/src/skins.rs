@@ -5,11 +5,13 @@ use base64::Engine;
 use std::io::Read;
 
 pub async fn data_url(http: &reqwest::Client, url: &str) -> Result<String> {
-    let u = url::Url::parse(url).map_err(|e| err("invalid", e.to_string()))?;
+    // Профіль Mojang віддає текстури за http:// — тягнемо їх тим самим шляхом, але за https.
+    let url = url.replacen("http://", "https://", 1);
+    let u = url::Url::parse(&url).map_err(|e| err("invalid", e.to_string()))?;
     if u.scheme() != "https" || !u.host_str().is_some_and(|h| h.ends_with("minecraft.net") || h.ends_with("mojang.com")) {
         return Err(err("invalid", "скін не з серверів Mojang"));
     }
-    let bytes = net::get_bytes(http, url).await?;
+    let bytes = net::get_bytes(http, &url).await?;
     Ok(png_url(&bytes))
 }
 
