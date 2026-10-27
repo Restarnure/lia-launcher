@@ -60,7 +60,7 @@ let state: State = {
   info: null,
   settings: null,
   instances: [],
-  accounts: { accounts: [], selected: null, msAvailable: false, offlineAllowed: false },
+  accounts: { accounts: [], selected: null, msAvailable: false },
   tasks: {},
   running: {},
   logs: {},

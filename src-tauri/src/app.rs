@@ -402,9 +402,6 @@ async fn selected_account(state: &AppState) -> Result<Account> {
         .position(|a| Some(&a.id) == sel.as_ref())
         .or(if list.is_empty() { None } else { Some(0) })
         .ok_or_else(|| err("no_account", "додайте акаунт, щоб грати"))?;
-    if list[idx].kind == "offline" && !has_license(&list) {
-        return Err(err("offline_needs_license", "офлайн-гра доступна після входу через Microsoft з купленою грою"));
-    }
     let client_id = state.settings().client_id();
     let acc = &mut list[idx];
     match accounts::ensure_fresh(&state.http, &client_id, acc).await {
@@ -791,18 +788,11 @@ pub async fn mrpack_import(state: S<'_>, path: String) -> Result<Instance> {
 #[tauri::command]
 pub async fn accounts_list(state: S<'_>) -> Result<Value> {
     let all = state.accounts.lock().await;
-    let offline_allowed = has_license(&all);
     let list: Vec<AccountView> = all.iter().map(Account::view).collect();
     drop(all);
     let sel = state.settings().selected_account;
     let selected = list.iter().find(|a| Some(&a.id) == sel.as_ref()).or(list.first()).map(|a| a.id.clone());
-    Ok(json!({ "accounts": list, "selected": selected, "msAvailable": !state.settings().client_id().is_empty(), "offlineAllowed": offline_allowed }))
-}
-
-/// Офлайн-акаунти лише для тих, хто має гру: так вимагають правила Mojang для схвалення Client ID.
-/// Microsoft-акаунт потрапляє в список, тільки якщо на ньому є Minecraft (інакше профіль дає 404).
-fn has_license(list: &[Account]) -> bool {
-    list.iter().any(|a| a.kind == "microsoft")
+    Ok(json!({ "accounts": list, "selected": selected, "msAvailable": !state.settings().client_id().is_empty() }))
 }
 
 async fn upsert(state: &AppState, acc: Account) -> Result<AccountView> {
@@ -818,9 +808,6 @@ async fn upsert(state: &AppState, acc: Account) -> Result<AccountView> {
 
 #[tauri::command]
 pub async fn account_add_offline(state: S<'_>, name: String) -> Result<AccountView> {
-    if !has_license(&state.accounts.lock().await) {
-        return Err(err("offline_needs_license", "офлайн-акаунт можна додати після входу через Microsoft з купленою грою"));
-    }
     upsert(&state, accounts::offline(&name)?).await
 }
 

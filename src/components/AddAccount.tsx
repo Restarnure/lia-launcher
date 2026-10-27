@@ -7,7 +7,6 @@ import { Modal } from "./ui";
 
 export function AddAccount({ onClose }: { onClose: () => void }) {
   const msAvailable = useStore((s) => s.accounts.msAvailable);
-  const offlineAllowed = useStore((s) => s.accounts.offlineAllowed);
   const [nick, setNick] = useState("");
   const [busy, setBusy] = useState<"ms" | "offline" | null>(null);
   const valid = /^[A-Za-z0-9_]{3,16}$/.test(nick);
@@ -83,9 +82,6 @@ export function AddAccount({ onClose }: { onClose: () => void }) {
           <b>{t("acc.offline")}</b>
           <p className="hint">{t("acc.offline_desc")}</p>
         </div>
-        {!offlineAllowed ? (
-          <p className="hint">{t("acc.offline_locked")}</p>
-        ) : (
         <div className="row">
           <input
             className="input"
@@ -100,7 +96,6 @@ export function AddAccount({ onClose }: { onClose: () => void }) {
             {t("acc.add")}
           </button>
         </div>
-        )}
         {nick.length > 0 && !valid && <p className="error-text">{t("err.invalid_nick")}</p>}
       </div>
     </Modal>
