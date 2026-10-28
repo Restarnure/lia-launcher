@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { ArrowUpCircle, RefreshCw } from "lucide-react";
@@ -76,6 +76,56 @@ export function UpdateModal() {
       )}
       {st.status === "installing" && <p className="faint">{t("upd.installing")}</p>}
     </Modal>
+  );
+}
+
+/** Застарілою версією користуватися не можна, лише оновитися. Заголовок вікна лишається, щоб його можна було згорнути. */
+export function ForcedUpdate() {
+  const st = useStore((s) => s.update);
+  const running = useStore((s) => Object.keys(s.running).length > 0);
+  const version = useStore((s) => s.info?.version ?? "");
+  useEffect(() => {
+    if (st.status === "idle") checkForUpdate(false);
+  }, [st.status]);
+  const busy = st.status === "downloading" || st.status === "installing";
+  const pct = st.status === "downloading" && st.total > 0 ? (st.done / st.total) * 100 : 0;
+  return (
+    <div className="forced-update" role="alertdialog" aria-modal="true">
+      <div className="forced-card">
+        <ArrowUpCircle size={42} color="var(--yellow)" />
+        <h2>{t("upd.forced_title")}</h2>
+        <p className="faint">{t("upd.forced_text", { v: version })}</p>
+        {"update" in st ? (
+          <button className="btn primary lg" disabled={busy} onClick={installUpdate}>
+            {busy ? <div className="spinner" style={{ width: 16, height: 16 }} /> : <RefreshCw size={16} />}
+            {t("upd.forced_install", { v: st.update.version })}
+          </button>
+        ) : st.status === "checking" ? (
+          <div className="row faint">
+            <div className="spinner" style={{ width: 16, height: 16 }} />
+            {t("upd.checking")}
+          </div>
+        ) : (
+          <div className="row" style={{ justifyContent: "center", flexWrap: "wrap" }}>
+            <button className="btn primary" onClick={() => checkForUpdate(true)}>
+              <RefreshCw size={15} />
+              {t("upd.retry")}
+            </button>
+            <button className="btn" onClick={() => api.openUrl("https://github.com/Restarnure/lia-launcher/releases/latest").catch(fail)}>
+              {t("upd.download_site")}
+            </button>
+          </div>
+        )}
+        {st.status === "downloading" && (
+          <div className="field" style={{ width: "100%" }}>
+            <Progress value={pct} indeterminate={st.total === 0} />
+            <small className="faint">{t("upd.downloading", { p: st.total > 0 ? `${bytes(st.done)} / ${bytes(st.total)}` : bytes(st.done) })}</small>
+          </div>
+        )}
+        {st.status === "installing" && <p className="faint">{t("upd.installing")}</p>}
+        {running && <p className="hint">{t("upd.game_note")}</p>}
+      </div>
+    </div>
   );
 }
 

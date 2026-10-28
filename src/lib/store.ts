@@ -54,6 +54,8 @@ interface State {
   addAccountOpen: boolean;
   update: UpdateState;
   updateOpen: boolean;
+  /** Сервер ЛІЇ не пускає цю версію: користуватися лаунчером можна лише після оновлення. */
+  mustUpdate: boolean;
   /** Що зараз встановлюється з каталогу: «<збірка або modpack>:<проєкт>». Живе довше за сторінку. */
   installing: Record<string, true>;
 }
@@ -75,6 +77,7 @@ let state: State = {
   addAccountOpen: false,
   update: { status: "idle" },
   updateOpen: false,
+  mustUpdate: false,
   installing: {},
 };
 
@@ -139,8 +142,11 @@ export function fail(e: unknown, title?: string) {
     setState({ addAccountOpen: true });
     return;
   }
-  // Сервер ЛІЇ більше не пускає цю версію, тож показуємо оновлення (якщо воно вже знайдене).
-  if (err.code === "outdated") setState({ updateOpen: true });
+  // Сервер ЛІЇ більше не пускає цю версію: далі лише оновлення.
+  if (err.code === "outdated") {
+    setState({ mustUpdate: true });
+    return;
+  }
   const text = errText(err);
   const detail = DETAILED.has(err.code) && err.message && text !== err.message ? err.message : undefined;
   toast("error", title ?? text, title ? text : detail);

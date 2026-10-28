@@ -60,6 +60,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app::app_info,
+            app::launcher_outdated,
             app::open_url,
             app::open_path,
             app::task_cancel,

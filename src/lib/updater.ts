@@ -1,5 +1,6 @@
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { api } from "./api";
 import { t } from "./i18n";
 import { getState, setState, toast } from "./store";
 
@@ -61,9 +62,13 @@ export async function installUpdate() {
   }
 }
 
-/** Перша перевірка за кілька секунд після старту, далі — раз на 6 годин. */
+/** Перевірка одразу після старту, далі раз на 6 годин. Застарілу версію сервер ЛІЇ не пускає, і тоді оновлення обов'язкове. */
 export function scheduleUpdateChecks() {
   if (import.meta.env.DEV) return;
-  setTimeout(() => checkForUpdate(false), 5000);
-  setInterval(() => checkForUpdate(false), 6 * 60 * 60 * 1000);
+  const run = () => {
+    checkForUpdate(false);
+    api.launcherOutdated().then((old) => old && setState({ mustUpdate: true })).catch(() => {});
+  };
+  run();
+  setInterval(run, 6 * 60 * 60 * 1000);
 }

@@ -356,6 +356,7 @@ export function errorOf(e: unknown): ApiError {
 
 export const api = {
   appInfo: () => invoke<AppInfo>("app_info"),
+  launcherOutdated: () => invoke<boolean>("launcher_outdated"),
   openUrl: (url: string) => invoke<void>("open_url", { url }),
   openPath: (path: string, reveal = false) => invoke<void>("open_path", { path, reveal }),
   taskCancel: (id: number) => invoke<void>("task_cancel", { id }),

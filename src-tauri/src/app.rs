@@ -149,6 +149,14 @@ pub async fn app_info(state: S<'_>) -> Result<Value> {
     }))
 }
 
+/// Сервер ЛІЇ відповідає 426, якщо ця версія лаунчера застаріла. Тоді інтерфейс вимагає оновитися.
+/// Без мережі лаунчер працює як завжди.
+#[tauri::command]
+pub async fn launcher_outdated(state: S<'_>) -> Result<bool> {
+    let r = state.http.get(format!("{}/health", crate::lia::api())).timeout(std::time::Duration::from_secs(10)).send().await;
+    Ok(r.is_ok_and(|r| r.status().as_u16() == 426))
+}
+
 #[tauri::command]
 pub async fn open_url(state: S<'_>, url: String) -> Result<()> {
     let ok = url::Url::parse(&url).is_ok_and(|u| matches!(u.scheme(), "https" | "http"));

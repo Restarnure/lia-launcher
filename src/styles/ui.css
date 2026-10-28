@@ -669,6 +669,43 @@ a.hint:hover {
   }
 }
 
+/* Обов'язкове оновлення: закриває все, крім заголовка вікна (згорнути й закрити можна). */
+.forced-update {
+  position: fixed;
+  inset: 42px 0 0 0;
+  z-index: 260;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(5, 8, 13, 0.86);
+  backdrop-filter: blur(10px);
+  animation: fade 0.16s;
+}
+
+.forced-card {
+  width: min(460px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 32px 28px;
+  text-align: center;
+  border-radius: var(--r-xl);
+  background: #121927;
+  border: 1px solid var(--border-2);
+  box-shadow: var(--shadow);
+}
+
+.forced-card h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 20px;
+}
+
+.forced-card p {
+  margin: 0;
+}
+
 .modal {
   position: relative;
   width: min(520px, 100%);

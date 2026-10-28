@@ -429,6 +429,11 @@ const uk = {
   "upd.toast": "Доступне оновлення ЛІЇ {v}",
   "upd.toast_text": "Кнопка «Оновлення» вгорі вікна.",
   "upd.no_notes": "Виправлення й покращення.",
+  "upd.forced_title": "Потрібне оновлення",
+  "upd.forced_text": "У версії {v} є відомі проблеми з безпекою, тому нею вже не можна користуватися. Оновіть лаунчер, це займе хвилину.",
+  "upd.forced_install": "Оновити до {v}",
+  "upd.retry": "Спробувати ще",
+  "upd.download_site": "Завантажити з GitHub",
 
   "tasks.title": "Завантаження",
   "tasks.empty": "Немає активних завантажень",
@@ -1001,6 +1006,11 @@ const en: Record<Key, string> = {
   "upd.toast": "ЛІЯ update {v} is available",
   "upd.toast_text": "Use the “Update” button at the top of the window.",
   "upd.no_notes": "Fixes and improvements.",
+  "upd.forced_title": "Update required",
+  "upd.forced_text": "Version {v} has known security problems, so it can no longer be used. Update the launcher, it takes a minute.",
+  "upd.forced_install": "Update to {v}",
+  "upd.retry": "Try again",
+  "upd.download_site": "Download from GitHub",
 
   "tasks.title": "Downloads",
   "tasks.empty": "No active downloads",

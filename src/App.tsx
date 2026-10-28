@@ -10,7 +10,7 @@ import { Browse } from "./pages/Browse";
 import { AddAccount } from "./components/AddAccount";
 import { Settings } from "./pages/Settings";
 import { Friends } from "./pages/Friends";
-import { UpdateModal } from "./components/Update";
+import { ForcedUpdate, UpdateModal } from "./components/Update";
 
 // 3D-перегляд скінів (three.js) — найважча частина; вантажиться лише на сторінці акаунтів.
 const Accounts = lazy(() => import("./pages/Accounts").then((m) => ({ default: m.Accounts })));
@@ -59,14 +59,18 @@ export function App() {
   const newInstance = useStore((s) => s.newInstanceOpen);
   const addAccount = useStore((s) => s.addAccountOpen);
   const updateOpen = useStore((s) => s.updateOpen);
+  const mustUpdate = useStore((s) => s.mustUpdate);
   return (
     <div className="app" key={lang}>
       <TitleBar />
       <Sidebar />
-      <main className="main">{ready ? <Page /> : <Splash />}</main>
+      <main className="main" inert={mustUpdate}>
+        {ready ? <Page /> : <Splash />}
+      </main>
       {newInstance && <NewInstanceModal />}
       {addAccount && <AddAccount onClose={() => setState({ addAccountOpen: false })} />}
-      {updateOpen && <UpdateModal />}
+      {updateOpen && !mustUpdate && <UpdateModal />}
+      {mustUpdate && <ForcedUpdate />}
       <CrashDialog />
       <ConfirmHost />
       <DropHandler />
