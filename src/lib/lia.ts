@@ -2,7 +2,7 @@
 // автоматичне відкриття LAN-світу друзям через ретранслятор.
 import { useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api, type GameEvent, type LiaFriends, type LiaMe, type LiaPresence, type LiaSession, type LogLine } from "./api";
+import { api, errorOf, type GameEvent, type LiaFriends, type LiaMe, type LiaPresence, type LiaSession, type LogLine } from "./api";
 import { t } from "./i18n";
 import { fail, getState, refreshInstances, toast } from "./store";
 
@@ -116,8 +116,10 @@ export async function refreshLia(reconnect = false) {
   if (session) {
     try {
       me = await api.lia<LiaMe>("GET", "/api/me");
-    } catch {
+    } catch (e) {
       // Немає мережі (сесію лишаємо — спробуємо пізніше) або сесію відкликано (ядро її вже прибрало).
+      // Сервер підняв мінімальну версію, поки лаунчер працював: без цього друзі бачили б нас офлайн без пояснень.
+      if (errorOf(e).code === "outdated") fail(e);
       me = st.me;
     }
   }
