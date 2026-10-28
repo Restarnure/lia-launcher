@@ -174,7 +174,7 @@ fn nbt_str(out: &mut Vec<u8>, s: &str) {
     out.extend_from_slice(s.as_bytes());
 }
 
-/// Запис сервера в списку: тіло TAG_Compound без байта типу.
+/// Запис сервера в списку: тіло TAG_Compound без байта типу. Ресурспак сервера дозволено.
 fn server_entry(name: &str, ip: &str) -> Vec<u8> {
     let mut b = Vec::new();
     for (k, v) in [("name", name), ("ip", ip)] {
@@ -182,8 +182,100 @@ fn server_entry(name: &str, ip: &str) -> Vec<u8> {
         nbt_str(&mut b, k);
         nbt_str(&mut b, v);
     }
+    accept_tag(&mut b);
     b.push(0);
     b
+}
+
+fn accept_tag(b: &mut Vec<u8>) {
+    b.push(1);
+    nbt_str(b, "acceptTextures");
+    b.push(1);
+}
+
+fn be(b: &[u8], i: usize, w: usize) -> Option<usize> {
+    let s = b.get(i..i + w)?;
+    Some(if w == 2 { u16::from_be_bytes([s[0], s[1]]) as usize } else { i32::from_be_bytes([s[0], s[1], s[2], s[3]]).max(0) as usize })
+}
+
+/// Довжина значення тегу типу `t` на початку `b`. None — обрізаний чи незнайомий формат.
+fn nbt_len(t: u8, b: &[u8]) -> Option<usize> {
+    let len = match t {
+        1 => 1,
+        2 => 2,
+        3 | 5 => 4,
+        4 | 6 => 8,
+        7 => 4 + be(b, 0, 4)?,
+        8 => 2 + be(b, 0, 2)?,
+        11 => 4 + 4 * be(b, 0, 4)?,
+        12 => 4 + 8 * be(b, 0, 4)?,
+        9 => {
+            let (et, mut i) = (*b.first()?, 5);
+            for _ in 0..be(b, 1, 4)? {
+                i += nbt_len(et, b.get(i..)?)?;
+            }
+            i
+        }
+        10 => {
+            let mut i = 0;
+            loop {
+                let tt = *b.get(i)?;
+                i += 1;
+                if tt == 0 {
+                    break i;
+                }
+                i += 2 + be(b, i, 2)?;
+                i += nbt_len(tt, b.get(i..)?)?;
+            }
+        }
+        _ => return None,
+    };
+    (len <= b.len()).then_some(len)
+}
+
+/// Поля запису сервера: (тип, назва, значення).
+fn fields(c: &[u8]) -> Option<Vec<(u8, &[u8], &[u8])>> {
+    let (mut v, mut i) = (vec![], 0);
+    loop {
+        let t = *c.get(i)?;
+        if t == 0 {
+            return Some(v);
+        }
+        let n = be(c, i + 1, 2)?;
+        let name = c.get(i + 3..i + 3 + n)?;
+        i += 3 + n;
+        let len = nbt_len(t, c.get(i..)?)?;
+        v.push((t, name, &c[i..i + len]));
+        i += len;
+    }
+}
+
+/// Шукає сервер з адресою рівно `ip` і дозволяє йому ресурспак, якщо гравець ще не обирав
+/// (свою відмову він зберігає). Повертає (чи знайдено, новий вміст). None — незнайомий формат.
+fn accept_textures(dat: &[u8], ip: &str) -> Option<(bool, Vec<u8>)> {
+    if dat.len() < 19 || dat[..6] != [10, 0, 0, 9, 0, 7] || &dat[6..13] != b"servers" {
+        return None;
+    }
+    let count = be(dat, 14, 4)?;
+    if dat[13] != 10 {
+        return (count == 0).then(|| (false, dat.to_vec()));
+    }
+    let (mut out, mut i, mut found) = (dat[..18].to_vec(), 18, false);
+    for _ in 0..count {
+        let len = nbt_len(10, &dat[i..])?;
+        let entry = &dat[i..i + len];
+        let f = fields(entry)?;
+        let mine = f.iter().any(|(t, n, v)| *t == 8 && *n == b"ip" && v.get(2..) == Some(ip.as_bytes()));
+        out.extend_from_slice(&entry[..len - 1]);
+        if mine && !f.iter().any(|(_, n, _)| *n == b"acceptTextures") {
+            accept_tag(&mut out);
+        }
+        out.push(0);
+        found |= mine;
+        i += len;
+    }
+    out.extend_from_slice(&dat[i..]);
+    Some((found, out))
 }
 
 /// Список серверів гри (нестиснений NBT) з одним сервером.
@@ -219,6 +311,7 @@ fn prepend_server(dat: &[u8], name: &str, ip: &str) -> Option<Vec<u8>> {
 }
 
 /// Закріплений сервер у списку «Мультиплеєр» збірки: створює список або дописує сервер, якщо його там немає.
+/// Адреса та сама, що в швидкому вході (launch.rs), інакше гра візьме інший запис, без дозволу на ресурспак.
 pub fn seed_servers(game_dir: &std::path::Path, f: &Featured) {
     if !f.name.is_ascii() {
         return;
@@ -226,10 +319,13 @@ pub fn seed_servers(game_dir: &std::path::Path, f: &Featured) {
     let path = game_dir.join("servers.dat");
     let ip = if f.port == 25565 { f.address.clone() } else { format!("{}:{}", f.address, f.port) };
     let data = match std::fs::read(&path) {
-        Ok(dat) if dat.windows(f.address.len()).any(|w| w == f.address.as_bytes()) => return,
-        Ok(dat) => match prepend_server(&dat, &f.name, &ip) {
-            Some(d) => d,
-            None => return,
+        Ok(dat) => match accept_textures(&dat, &ip) {
+            Some((true, out)) if out != dat => out,
+            Some((false, _)) => match prepend_server(&dat, &f.name, &ip) {
+                Some(d) => d,
+                None => return,
+            },
+            _ => return,
         },
         Err(_) => servers_dat(&f.name, &ip),
     };
@@ -260,6 +356,65 @@ mod tests {
         let empty = [10, 0, 0, 9, 0, 7, b's', b'e', b'r', b'v', b'e', b'r', b's', 0, 0, 0, 0, 0, 0];
         assert_eq!(&super::prepend_server(&empty, "S", "s.net").unwrap()[13..18], &[10, 0, 0, 0, 1]);
         assert!(super::prepend_server(&[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "S", "s").is_none());
+    }
+
+    /// Запис, як його пише гра: зі значком і без acceptTextures, поки гравець не обрав.
+    fn game_entry(ip: &str, accept: Option<u8>) -> Vec<u8> {
+        let mut b = vec![1];
+        super::nbt_str(&mut b, "hidden");
+        b.push(0);
+        for (k, v) in [("ip", ip), ("name", "Minecraft Server"), ("icon", "iVBORw0KGgo")] {
+            b.push(8);
+            super::nbt_str(&mut b, k);
+            super::nbt_str(&mut b, v);
+        }
+        if let Some(a) = accept {
+            b.push(1);
+            super::nbt_str(&mut b, "acceptTextures");
+            b.push(a);
+        }
+        b.push(0);
+        b
+    }
+
+    fn list(entries: &[Vec<u8>]) -> Vec<u8> {
+        let mut b = vec![10, 0, 0, 9, 0, 7, b's', b'e', b'r', b'v', b'e', b'r', b's', 10];
+        b.extend_from_slice(&(entries.len() as i32).to_be_bytes());
+        entries.iter().for_each(|e| b.extend(e));
+        b.push(0);
+        b
+    }
+
+    fn accepts(dat: &[u8], ip: &str) -> Option<u8> {
+        let mut i = 18;
+        loop {
+            let len = super::nbt_len(10, &dat[i..]).unwrap();
+            let f = super::fields(&dat[i..i + len]).unwrap();
+            if f.iter().any(|(_, n, v)| *n == b"ip" && v.get(2..) == Some(ip.as_bytes())) {
+                return f.iter().find(|(_, n, _)| *n == b"acceptTextures").map(|(_, _, v)| v[0]);
+            }
+            i += len;
+        }
+    }
+
+    #[test]
+    fn server_pack_allowed() {
+        // Свій запис гри «shotam.today:25565» не плутаємо з «shotam.today».
+        let dat = list(&[game_entry("other.net", None), game_entry("shotam.today:25565", None), game_entry("shotam.today", None)]);
+        let (found, out) = super::accept_textures(&dat, "shotam.today").unwrap();
+        assert!(found);
+        assert_eq!(accepts(&out, "shotam.today"), Some(1));
+        assert_eq!(accepts(&out, "shotam.today:25565"), None);
+        assert_eq!(accepts(&out, "other.net"), None);
+        assert_eq!(&out[out.len() - 1..], &[0]);
+        // Повторно нічого не змінюється, а відмову гравця не чіпаємо.
+        assert_eq!(super::accept_textures(&out, "shotam.today").unwrap().1, out);
+        let declined = list(&[game_entry("shotam.today", Some(0))]);
+        assert_eq!(super::accept_textures(&declined, "shotam.today").unwrap().1, declined);
+        // Немає запису: дописуємо свій, уже з дозволом.
+        let (found, _) = super::accept_textures(&list(&[game_entry("shotam.today:25565", None)]), "shotam.today").unwrap();
+        assert!(!found);
+        assert_eq!(accepts(&super::servers_dat("Shotam", "shotam.today"), "shotam.today"), Some(1));
     }
 
     #[test]

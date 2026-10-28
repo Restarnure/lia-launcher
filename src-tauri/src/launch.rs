@@ -136,7 +136,9 @@ pub fn build_args(prep: &Prepared, paths: &Paths, o: &Options) -> Vec<String> {
         Some(LegacyAssets::Resources(_)) => o.game_dir.join("resources"),
         None => paths.assets(),
     };
-    let server_addr = o.server.as_ref().map(|(h, p)| format!("{h}:{p}")).unwrap_or_default();
+    // Швидкий вхід шукає сервер у списку за точним рядком адреси, а там стандартний порт не пишуть.
+    // Не знайшовши, гра заводить прихований запис без дозволу на ресурспак сервера, і пак не ставиться.
+    let server_addr = o.server.as_ref().map(|(h, p)| if *p == 25565 { h.clone() } else { format!("{h}:{p}") }).unwrap_or_default();
 
     let vars: HashMap<&str, String> = HashMap::from([
         ("auth_player_name", o.auth.name.clone()),
