@@ -124,8 +124,8 @@ export async function refreshLia(reconnect = false) {
   const fresh = await api.liaSession().catch(() => null);
   const same = fresh?.token === st.session?.token;
   const changed = !same || !!me?.emailVerified !== !!st.me?.emailVerified;
-  // Та сама сесія — той самий об'єкт: інакше сторінки, що від неї залежать, перезавантажуються
-  // на кожну спробу перепідключення (без мережі — помилка кожні ~10 с).
+  // Та сама сесія лишається тим самим об'єктом. Інакше сторінки, що від неї залежать, перезавантажуються
+  // на кожну спробу перепідключення (без мережі це помилка кожні ~10 с).
   set({ session: same ? st.session : fresh, me: fresh ? me : null, ...(fresh ? {} : { friends: null }) });
   if (changed || reconnect) {
     connect();
@@ -177,7 +177,7 @@ export async function initLia() {
     const s = st.shares[payload.instanceId];
     unshare(payload.instanceId);
     if (!s) return;
-    // Обірвався зв'язок з ретранслятором (перезапуск сервера, мережа), а світ ще відкритий — відкриваємо знову.
+    // Обірвався зв'язок з ретранслятором (перезапуск сервера, мережа), а світ ще відкритий, тож відкриваємо знову.
     // Світ, що обірвався одразу після відкриття, не перевідкриваємо: інакше вийшло б коло.
     if (Date.now() - s.since > 30_000 && getState().running[payload.instanceId]) setTimeout(() => shareWorld(payload.instanceId, s.port), 3000);
     else toast("info", t("lia.share_lost"));

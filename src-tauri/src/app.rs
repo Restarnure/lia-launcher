@@ -106,7 +106,7 @@ fn edit_instance(paths: &Paths, id: &str, f: impl FnOnce(&mut Instance)) -> Resu
     instances::save(paths, &i)
 }
 
-/// Шляхи даних, якщо `id` — справжня збірка: інакше `..\..` чи абсолютний шлях вели б у чужу `.minecraft`.
+/// Шляхи даних, лише якщо `id` справжньої збірки. Інакше `..\..` чи абсолютний шлях вели б у чужу `.minecraft`.
 fn inst_paths(state: &AppState, id: &str) -> Result<Paths> {
     let paths = state.ctx().paths;
     instances::get(&paths, id)?;
@@ -167,7 +167,7 @@ pub async fn open_path(state: S<'_>, path: String, reveal: Option<bool>) -> Resu
         return Err(err("invalid", "шлях поза теками лаунчера"));
     }
     let reveal = reveal.unwrap_or(false);
-    // Теку створюємо (logs/ немає до першого запуску), а на місці зниклого скріншота — ні.
+    // Теку створюємо (logs/ немає до першого запуску), але не на місці зниклого скріншота.
     if !p.exists() && !reveal {
         std::fs::create_dir_all(&p)?;
     }
@@ -375,7 +375,7 @@ pub async fn instance_delete(state: S<'_>, id: String) -> Result<()> {
 #[tauri::command]
 pub async fn instance_duplicate(state: S<'_>, id: String, suffix: String) -> Result<Instance> {
     // Копія взяла б і .running (лаунчер після перезапуску вважав би запущеними обидві),
-    // а відкритий світ тримає session.lock — копіювання обірвалось би посередині.
+    // а відкритий світ тримає session.lock, і копіювання обірвалось би посередині.
     if launch::get(&id).is_some() {
         return Err(err("already_running", "закрийте гру, щоб скопіювати збірку"));
     }
@@ -940,7 +940,7 @@ pub async fn account_login_ms(state: S<'_>) -> Result<AccountView> {
     let url: url::Url = pkce.url.parse().map_err(|_| err("invalid", "URL входу"))?;
     let nav_send = send.clone();
     let mut builder = WebviewWindowBuilder::new(&state.app, "ms-login", WebviewUrl::External(url))
-        .title("Вхід Microsoft — ЛІЯ")
+        .title("Вхід у Microsoft")
         .inner_size(520.0, 700.0)
         .resizable(false)
         .center()
@@ -1404,7 +1404,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("lia-app-test-{}", std::process::id()));
         let paths = Paths::new(root.clone());
         let inst = instances::create(&paths, NewInstance { name: "Тест".into(), mc_version: "1.21.4".into(), loader: "vanilla".into(), loader_version: None, icon: None }).unwrap();
-        // Поки гра готувалась до запуску, збірку перейменували — запуск не повертає стару назву.
+        // Поки гра готувалась до запуску, збірку перейменували. Запуск не має повернути стару назву.
         let mut renamed = instances::get(&paths, &inst.id).unwrap();
         renamed.name = "Нова".into();
         instances::save(&paths, &renamed).unwrap();

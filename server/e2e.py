@@ -2,7 +2,7 @@
 # через openssl), друзі, статуси (WebSocket), ретранслятор, збірки.
 # Локально: запустити lia-server з LIA_HTTP=127.0.0.1:18080 LIA_PLAY_DOMAIN=play.localhost LIA_MAIL_LOG=1,
 # вивід сервера — у файл, і `LIA_SERVER_LOG=<файл> python e2e.py` (коди з листів читаються з логу).
-# Інший порт ретранслятора — LIA_RELAY_PORT однаковий для сервера й тесту.
+# Інший порт ретранслятора: однаковий LIA_RELAY_PORT для сервера й тесту.
 # Бойовий: LIA_B=https://lia.starnure.dev SKIP_RELAY=1 python e2e.py (створює тестові акаунти — приберіть після).
 # Ліміт реєстрацій — 5 на годину з IP: між прогонами перезапускайте сервер.
 import base64, hashlib, io, json, os, socket, struct, subprocess, sys, threading, time, urllib.request, zipfile
@@ -63,7 +63,7 @@ assert req("POST", "/api/register", {"name": "Weak" + run, "email": f"w{run}@tes
 assert req("POST", "/api/register", {"name": "admin", "email": f"ad{run}@test.lia", "password": pw(9)})[0] == 400  # зарезервовано
 ta, tb = ra["accessToken"], rb["accessToken"]
 
-# Старий лаунчер (і гра, яку він запустив) — 426 «оновіть»; новий і не-лаунчер проходять.
+# Старий лаунчер і запущена ним гра отримують 426, новий лаунчер і браузер проходять.
 for ua, code in [("LIA-Launcher/1.1.2", 426), ("LIA-Launcher/1.1.2 Java/21.0.7", 426), ("LIA-Launcher/99.0.0", 200), ("Mozilla/5.0", 200)]:
     r = urllib.request.Request(B + "/api/me", headers={"User-Agent": ua, "Authorization": "Bearer " + ta})
     try:

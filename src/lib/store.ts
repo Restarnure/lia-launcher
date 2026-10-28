@@ -139,7 +139,7 @@ export function fail(e: unknown, title?: string) {
     setState({ addAccountOpen: true });
     return;
   }
-  // Сервер ЛІЇ більше не пускає цю версію — показуємо оновлення (якщо воно вже знайдене).
+  // Сервер ЛІЇ більше не пускає цю версію, тож показуємо оновлення (якщо воно вже знайдене).
   if (err.code === "outdated") setState({ updateOpen: true });
   const text = errText(err);
   const detail = DETAILED.has(err.code) && err.message && text !== err.message ? err.message : undefined;

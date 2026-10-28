@@ -110,7 +110,7 @@ function SkinPanel({ account }: { account: Account }) {
     viewer.current = v;
     return () => {
       v.dispose();
-      // Новий перегляд на кожен клік по акаунту — без цього WebGL-контексти накопичуються.
+      // Новий перегляд на кожен клік по акаунту, і без цього WebGL-контексти накопичуються.
       v.renderer.forceContextLoss();
       viewer.current = null;
     };

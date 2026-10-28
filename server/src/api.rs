@@ -276,7 +276,7 @@ pub async fn ws(st: S, Query(q): Query<WsQuery>, up: WebSocketUpgrade) -> R<Resp
         return Err(ApiErr(StatusCode::TOO_MANY_REQUESTS, "TooManyRequests", "забагато відкритих з'єднань".into()));
     }
     let app = st.0.clone();
-    // Статус — кількасот байтів; типові для axum 64 МБ на повідомлення (16 МБ на кадр) дозволили б
+    // Статус займає кількасот байтів, а типові для axum 64 МБ на повідомлення (16 МБ на кадр) дозволили б
     // вичерпати пам'ять кількома повідомленнями.
     Ok(up.max_message_size(64 * 1024).max_frame_size(64 * 1024).on_upgrade(move |sock| session_ws(app, u, q.token, sock)))
 }
@@ -342,7 +342,7 @@ async fn session_ws(app: Arc<App>, u: User, token: String, sock: WebSocket) {
             }
         }
     });
-    // Сесію відкликали (вихід з усіх пристроїв, новий пароль, видалення акаунта) — статуси друзів більше не бачить.
+    // Сесію відкликали (вихід з усіх пристроїв, новий пароль, видалення акаунта), тож статуси друзів їй більше не шлемо.
     let mut check = tokio::time::interval(Duration::from_secs(60));
     loop {
         let m = tokio::select! {
@@ -560,7 +560,7 @@ fn notify_friends(app: &App, me: &User, msg: &Value) {
     }
 }
 
-// Тіло — `Body`, а не `Bytes`: інакше axum читав би все тіло в пам'ять ще до перевірки входу.
+// `Body`, а не `Bytes`: інакше axum читав би все тіло в пам'ять ще до перевірки входу.
 pub async fn pack_publish(st: S, h: HeaderMap, Query(q): Query<HashMap<String, String>>, body: Body) -> R<Json<Value>> {
     let me = auth(&st, &h)?;
     st.limit(format!("pack:{}", me.id), 30, Duration::from_secs(3600))?;
@@ -724,7 +724,7 @@ mod tests {
         let m = super::read_mrpack(Cursor::new(mrpack("1.21.1"))).unwrap();
         assert_eq!((m.name.as_str(), m.mc.as_str(), m.loader.as_str()), ("Тест", "1.21.1", "fabric"));
         assert_eq!(super::read_mrpack(Cursor::new(mrpack(&"1".repeat(100_000)))).unwrap().mc.len(), 32);
-        // Кінець архіву з ознакою zip64 (кількість записів 0xFFFF) — відмова ще до розбору каталогу.
+        // Кінець архіву з ознакою zip64 (0xFFFF записів) відхиляємо ще до розбору каталогу.
         let mut b = mrpack("1.21.1");
         let n = b.len();
         b[n - 12..n - 10].copy_from_slice(&[0xFF, 0xFF]);

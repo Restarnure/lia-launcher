@@ -221,7 +221,7 @@ pub async fn install(ctx: &Ctx, inst: &Instance, project_id: &str, version_id: O
     // Індекс читаємо заново: поки качали, в збірку могли встановити інше.
     let mut index = content::Index::load(&ctx.paths, &inst.id);
     for (filename, meta) in metas {
-        // Інша версія того самого проєкту — прибираємо, щоб не було дублікатів. Лише тепер, коли нова
+        // Іншу версію того самого проєкту прибираємо, щоб не було дублікатів. Лише тепер, коли нова
         // вже на диску: обірване завантаження не лишає збірку без мода.
         for old in index.files_of(&meta.project_id) {
             if old != filename {
@@ -445,7 +445,7 @@ pub async fn updates(ctx: &Ctx, hashes: &[String], inst: &Instance, kind: Kind) 
         return Err(err("http", format!("Modrinth: HTTP {}", resp.status().as_u16())));
     }
     let latest: HashMap<String, Value> = resp.json().await.unwrap_or_default();
-    // Менш стабільного, ніж стоїть, не пропонуємо (стабільному — бету, беті — альфу):
+    // Менш стабільного, ніж стоїть, не пропонуємо (до релізу бету, до бети альфу):
     // Modrinth повертає найновішу версію будь-якого типу.
     let current: HashMap<String, Value> = ctx
         .http
@@ -501,7 +501,7 @@ mod tests {
         let ctx = Ctx { paths: crate::paths::Paths::new(root.clone()), http: reqwest::Client::new(), emit: Arc::new(|_: &str, _| {}), concurrency: 1 };
         let task = ctx.task("test");
         let pack = root.join("p.mrpack");
-        // client-overrides в архіві раніше за overrides — однаково перекривають їх.
+        // client-overrides лежать в архіві раніше за overrides, але однаково перекривають їх.
         mrpack(&pack, &[("client-overrides/options.txt", "client"), ("overrides/options.txt", "common"), ("overrides/config/a.json", "{}")]);
         let inst = import_mrpack(&ctx, &pack, None, &task).await.unwrap();
         let game = ctx.paths.game_dir(&inst.id);
@@ -519,7 +519,7 @@ mod tests {
     #[test]
     fn update_stability() {
         let v = |t: &str| json!({ "version_type": t });
-        // Встановлено стабільну — бета не підходить; встановлено бету — підходить бета, не альфа.
+        // До релізу бета не підходить. До бети підходить бета, але не альфа.
         assert!(instability(&v("beta")) > instability(&v("release")));
         assert!(instability(&v("beta")) <= instability(&v("beta")));
         assert!(instability(&v("alpha")) > instability(&v("beta")));

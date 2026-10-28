@@ -100,7 +100,7 @@ pub async fn parse(resp: reqwest::Response) -> Result<Value> {
     let msg = serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| v["errorMessage"].as_str().map(str::to_string)).unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
     Err(match status.as_u16() {
         401 => err("lia_auth", "увійдіть у ЛІЯ ID знову"),
-        // Ліміт тіла запиту сервера чи Cloudflare — відповідь тоді не JSON, і «HTTP 413» нічого не пояснює.
+        // Ліміт тіла запиту на сервері чи в Cloudflare. Відповідь тоді не JSON, і «HTTP 413» нічого не пояснює.
         413 => err("lia", "збірка завелика для публікації (до 100 МБ)"),
         // Сервер більше не пускає цю версію лаунчера.
         426 => err("outdated", msg),
@@ -135,7 +135,7 @@ pub async fn game_session(http: &reqwest::Client, s: &Session, account: &Account
                 .send()
                 .await?;
             if !resp.status().is_success() {
-                return Err(err("lia", "Mojang не прийняв вхід — перезайдіть в акаунт Microsoft"));
+                return Err(err("lia", "Mojang не прийняв вхід. Перезайдіть в акаунт Microsoft"));
             }
             json!({ "kind": "mojang", "name": account.name, "serverId": sid })
         }
@@ -205,7 +205,7 @@ struct Share {
     task: tokio::task::JoinHandle<()>,
 }
 
-/// Ретранслятор шле ping кожні 20 с; довша тиша — з'єднання мертве (зник інтернет, ПК спав).
+/// Ретранслятор шле ping кожні 20 с. Якщо тиша довша, з'єднання мертве (зник інтернет, ПК спав).
 const RELAY_SILENCE: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn shares() -> &'static Mutex<HashMap<String, Share>> {
@@ -224,7 +224,7 @@ async fn relay_conn(hello: Value) -> std::io::Result<TcpStream> {
 /// Відкриває LAN-світ (порт `port` на цьому ПК) друзям через ретранслятор. Повертає (код, адреса).
 /// `on_end` викликається, коли з'єднання з ретранслятором обірвалося.
 pub async fn share(instance: &str, token: &str, port: u16, on_end: impl FnOnce() + Send + 'static) -> Result<(String, String)> {
-    // Уже відкрито — та сама адреса. Світ на іншому порту (перевідкрили) чи обірване з'єднання — відкриваємо заново.
+    // Уже відкрито: та сама адреса. Якщо світ на іншому порту (перевідкрили) чи з'єднання обірвалось, відкриваємо заново.
     let same = |s: &Share| s.port == port && !s.task.is_finished();
     if let Some(s) = shares().lock().unwrap().get(instance).filter(|s| same(s)) {
         return Ok((s.code.clone(), s.address.clone()));
@@ -240,7 +240,7 @@ pub async fn share(instance: &str, token: &str, port: u16, on_end: impl FnOnce()
     let code = hello["code"].as_str().unwrap_or("").to_string();
     let address = hello["address"].as_str().unwrap_or("").to_string();
     let mut map = shares().lock().unwrap();
-    // Паралельний виклик для того самого світу встиг першим — лишаємо його, наше з'єднання закриється.
+    // Паралельний виклик для того самого світу встиг першим. Лишаємо його, а наше з'єднання закриється.
     if let Some(s) = map.get(instance).filter(|s| same(s)) {
         return Ok((s.code.clone(), s.address.clone()));
     }
@@ -290,7 +290,7 @@ fn loader_dep(inst: &Instance) -> Result<Option<(&'static str, String)>> {
         .loader_version
         .clone()
         .or_else(|| inst.version_id.as_deref().and_then(|id| loader_version_of(&inst.loader, &inst.mc_version, id)))
-        .ok_or_else(|| err("lia", "спершу запустіть збірку один раз — тоді відома версія модлоадера"))?;
+        .ok_or_else(|| err("lia", "спершу запустіть збірку один раз, тоді стане відома версія модлоадера"))?;
     // У .mrpack Forge вказують без префікса версії гри.
     let v = v.strip_prefix(&format!("{}-", inst.mc_version)).map(str::to_string).unwrap_or(v);
     Ok(Some((key, v)))
@@ -462,7 +462,7 @@ mod tests {
         let first = tokio::spawn(share("relay-test", "tok", port, || {}));
         let mut ctl = open("aaaaaa").await;
         assert_eq!(first.await.unwrap().unwrap().0, "aaaaaa");
-        // Той самий світ — та сама адреса без нового з'єднання.
+        // Той самий світ дає ту саму адресу без нового з'єднання.
         assert_eq!(share("relay-test", "tok", port, || {}).await.unwrap().0, "aaaaaa");
         assert!(tokio::time::timeout(Duration::from_millis(200), relay.accept()).await.is_err());
 
@@ -487,7 +487,7 @@ mod tests {
         // Ретранслятор обірвав з'єднання: on_end, і наступний виклик відкриває світ заново, а не віддає мертву адресу.
         drop(ctl2);
         let t0 = std::time::Instant::now();
-        // on_end — останнє, що робить задача, але завершиться вона трохи пізніше.
+        // on_end задача викликає наостанок, але завершується трохи пізніше.
         while !ended.load(Ordering::SeqCst) || !shares().lock().unwrap().get("relay-test").is_some_and(|s| s.task.is_finished()) {
             assert!(t0.elapsed() < Duration::from_secs(5), "on_end не викликано");
             tokio::time::sleep(Duration::from_millis(20)).await;

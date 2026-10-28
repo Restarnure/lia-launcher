@@ -64,7 +64,7 @@ fn load_from(path: &std::path::Path) -> Vec<Account> {
     if let Some(list) = crypto::open(&b).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
         return list;
     }
-    // Не розшифрувався (інший користувач Windows, пошкоджений файл) — відкладаємо, щоб наступне збереження його не стерло.
+    // Не розшифрувався (інший користувач Windows, пошкоджений файл): відкладаємо, щоб наступне збереження його не стерло.
     let _ = std::fs::rename(path, path.with_extension(format!("dat.broken-{}", util::now_ms())));
     Vec::new()
 }
@@ -319,7 +319,7 @@ pub async fn upload_skin(http: &reqwest::Client, mc_token: &str, png: Vec<u8>, s
     let resp = http.post("https://api.minecraftservices.com/minecraft/profile/skins").bearer_auth(mc_token).multipart(form).send().await?;
     let s = resp.status().as_u16();
     if s == 429 {
-        return Err(err("skin_rate", "забагато змін скіна поспіль — спробуйте за хвилину"));
+        return Err(err("skin_rate", "забагато змін скіна поспіль, спробуйте за хвилину"));
     }
     if !resp.status().is_success() {
         let body = resp.text().await.unwrap_or_default();

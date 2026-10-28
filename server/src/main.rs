@@ -26,7 +26,7 @@ pub struct Config {
     pub play_domain: String,
     pub relay_port: u16,
     pub data: PathBuf,
-    /// Старіші лаунчери (з відомими вадами) сервер не пускає — просить оновитися.
+    /// Старіших лаунчерів (з відомими вадами) сервер не пускає і просить оновитися.
     pub min_launcher: [u32; 3],
 }
 
@@ -64,7 +64,7 @@ pub fn outdated() -> ApiErr {
     ApiErr(StatusCode::UPGRADE_REQUIRED, "Outdated", "Ця версія ЛІЇ застаріла, оновіть лаунчер: Налаштування → «Перевірити оновлення».".into())
 }
 
-/// Лаунчер (і гра, запущена ним, — Java дописує « Java/21») називає версію в User-Agent «LIA-Launcher/1.1.3».
+/// Лаунчер і запущена ним гра називають версію в User-Agent: «LIA-Launcher/1.1.3» (Java дописує « Java/21»).
 async fn gate(axum::extract::State(app): S, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let ua = req.headers().get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("");
     if ua.strip_prefix("LIA-Launcher/").and_then(parse_version).is_some_and(|v| v < app.cfg.min_launcher) {
@@ -100,7 +100,7 @@ pub fn now() -> i64 {
 }
 
 /// IP клієнта: за Cloudflare Tunnel справжня адреса — у CF-Connecting-IP.
-/// IPv6 — мережа /64: вона ціла в кожного абонента, і зі зміною адреси в ній ліміти не обходяться.
+/// Для IPv6 беремо мережу /64: вона ціла в кожного абонента, тож зміною адреси ліміти не обійти.
 pub fn client_ip(h: &HeaderMap) -> String {
     let ip = h.get("cf-connecting-ip").and_then(|v| v.to_str().ok()).unwrap_or("local");
     match ip.parse() {

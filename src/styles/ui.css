@@ -63,12 +63,18 @@
   background: var(--yellow-hi);
 }
 
+/* Вимкнена головна кнопка лишається свого кольору, лише блідішою: сіра зливалася з полями вводу. */
 .btn.primary:disabled,
 .btn.blue:disabled {
-  opacity: 1;
-  background: var(--surface-3);
-  color: var(--text-3);
   box-shadow: none;
+}
+
+.btn.primary:disabled:hover {
+  background: var(--yellow);
+}
+
+.btn.blue:disabled:hover {
+  background: var(--blue);
 }
 
 .btn.blue {
@@ -256,6 +262,15 @@
   color: var(--text-3);
 }
 
+/* Посилання серед підказок («Створити», «Забули пароль?») мають бути видно як посилання. */
+a.hint {
+  color: var(--blue-hi);
+}
+
+a.hint:hover {
+  text-decoration: underline;
+}
+
 .error-text {
   font-size: 12.5px;
   color: #ff8a96;
@@ -269,6 +284,7 @@
   flex: none;
   border-radius: 20px;
   background: #2a3345;
+  box-shadow: inset 0 0 0 1px var(--border-2);
   transition: background 0.18s;
 }
 
@@ -339,10 +355,11 @@
   color: var(--text);
 }
 
+/* Вибране видно з першого погляду: сірий на сірому губився. */
 .seg button.on {
-  background: var(--surface-3);
-  color: var(--text);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset;
+  background: var(--blue-soft);
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(61, 123, 255, 0.5);
 }
 
 /* ------------------------------------------------------------ випадний список */

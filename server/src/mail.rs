@@ -29,7 +29,7 @@ pub fn send(app: &App, to: &str, subject: &str, lines: &[String]) {
     let Ok(key) = std::env::var("RESEND_API_KEY") else { return };
     let text = lines.join("\n\n");
     let html = format!(
-        "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:15px;line-height:1.5;color:#1b1f2a\">{}<p style=\"color:#8a93a5;font-size:12px\">ЛІЯ — лаунчер Minecraft. Якщо це були не ви, змініть пароль у лаунчері.</p></div>",
+        "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:15px;line-height:1.5;color:#1b1f2a\">{}<p style=\"color:#8a93a5;font-size:12px\">Цей лист надіслала ЛІЯ, лаунчер Minecraft. Якщо це були не ви, змініть пароль у лаунчері.</p></div>",
         lines.iter().map(|l| format!("<p>{}</p>", esc(l))).collect::<String>()
     );
     let body = json!({ "from": from(), "to": [to], "subject": subject, "text": text, "html": html });

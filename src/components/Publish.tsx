@@ -76,7 +76,7 @@ function PublishModal({ inst, onClose }: { inst: Instance; onClose: () => void }
           <button className="btn ghost" onClick={onClose}>
             {t("common.cancel")}
           </button>
-          {/* Поки не відомо, чи збірку вже опубліковано, — інакше з'явилась би друга копія замість нової версії. */}
+          {/* Чекаємо, поки стане відомо, чи збірку вже опубліковано. Інакше з'явилась би друга копія замість нової версії. */}
           <button className="btn primary" disabled={busy || (!!packId && !existing)} onClick={go}>
             {busy && <div className="spinner" style={{ width: 14, height: 14 }} />}
             {existing ? t("lia.publish_new_version", { v: existing.version + 1 }) : t("lia.publish")}

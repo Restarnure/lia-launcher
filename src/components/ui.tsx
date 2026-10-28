@@ -13,7 +13,7 @@ import { getState, kill, launch, useInstanceTask, useStore } from "../lib/store"
 export function Modal(props: { title?: ReactNode; onClose: () => void; children: ReactNode; foot?: ReactNode; size?: "wide" | "xwide"; icon?: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    // Escape закриває лише верхнє вікно, а відкритий список — раніше за вікно під ним.
+    // Escape закриває лише верхнє вікно, а відкритий список раніше за вікно під ним.
     const onKey = (e: KeyboardEvent) =>
       e.key === "Escape" && !document.querySelector(".popover") && [...document.querySelectorAll(".overlay")].pop() === ref.current && props.onClose();
     window.addEventListener("keydown", onKey);
@@ -464,7 +464,7 @@ export function PlayButton({ inst, size, server, label }: { inst: Instance; size
   if (task) {
     const pct = task.total > 0 ? Math.floor((task.done / task.total) * 100) : 0;
     return (
-      // Другий клік подвійного натискання «Грати» влучає вже в цю кнопку — це не скасування.
+      // Другий клік подвійного натискання «Грати» влучає вже в цю кнопку, і це не скасування.
       <button className={`play busy ${size ?? ""}`} onClick={(e) => e.detail < 2 && api.taskCancel(task.id)} title={t("common.cancel")}>
         <div className={`fill ${task.total > 0 ? "" : "indeterminate"}`} style={{ width: `${pct}%` }} />
         <span className="ellipsis">{task.total > 0 ? `${stageLabel(task.stage)} · ${pct}%` : stageLabel(task.stage)}</span>

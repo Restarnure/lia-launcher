@@ -84,7 +84,7 @@ struct AssetObject {
     size: u64,
 }
 
-/// Хеш з індексу стає шляхом `objects/xx/<хеш>` — лише 40 малих hex-символів.
+/// Хеш з індексу стає шляхом `objects/xx/<хеш>`, тож пускаємо лише 40 малих hex-символів.
 fn valid_hash(h: &str) -> bool {
     h.len() == 40 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
@@ -173,7 +173,7 @@ pub async fn prepare(ctx: &Ctx, id: &str, task: &Arc<Task>, verify: bool) -> Res
     check_id(&index_ref.id)?;
     let index_path = ctx.paths.asset_index(&index_ref.id);
     let index_dl = Dl::new(&index_ref.url, index_path.clone(), index_ref.sha1.clone(), index_ref.size);
-    // Індекс знімків оновлюється під тим самим id, а розмір може збігтися — SHA1 перевіряємо завжди (файл малий).
+    // Індекс знімків оновлюється під тим самим id, а розмір може збігтися, тому SHA1 перевіряємо завжди (файл малий).
     net::download_all(&ctx.http, vec![index_dl], task, "version", 1, true).await?;
     let mut index: AssetIndex = util::read_json(&index_path)?;
     index.objects.retain(|_, o| valid_hash(&o.hash));
@@ -205,7 +205,7 @@ pub async fn prepare(ctx: &Ctx, id: &str, task: &Arc<Task>, verify: bool) -> Res
 }
 
 /// Жорстке посилання (без зайвих 25+ МБ), а якщо файлова система не вміє — копія.
-/// Повторно завантажений client.jar — новий файл з новим часом зміни, старе посилання на нього не вказує.
+/// Повторно завантажений client.jar є новим файлом з новим часом зміни, і старе посилання на нього не вказує.
 fn link_jar(src: &Path, dest: &Path) -> Result<()> {
     let same = std::fs::metadata(dest)
         .ok()
@@ -267,7 +267,7 @@ pub fn extract_natives(natives: &[(PathBuf, Vec<String>)], dir: &Path) -> Result
 mod tests {
     use super::*;
 
-    /// «Полагодити» качає client.jar наново (новий файл через rename) — посилання профілю має його побачити.
+    /// «Полагодити» качає client.jar наново (новий файл через rename), і посилання профілю має його побачити.
     #[test]
     fn relinks_redownloaded_jar() {
         let dir = std::env::temp_dir().join(format!("lia-link-{}", std::process::id()));

@@ -219,7 +219,7 @@ impl VersionJson {
                 Some(Arguments { game: [p.game, c.game].concat(), jvm: [p.jvm, c.jvm].concat() })
             }
         };
-        // Лише дочірній перекриває батька: власні дублікати батька — це варіанти під різні ОС
+        // Лише дочірній перекриває батька. Власні дублікати батька означають варіанти під різні ОС
         // (lwjgl 3.2.1 для macOS і 3.2.2 для решти в 1.14–1.18) або окремий запис natives (1.13).
         let child: HashSet<String> = self.libraries.iter().map(Library::dedupe_key).collect();
         let libraries = self.libraries.into_iter().chain(parent.libraries.into_iter().filter(|l| !child.contains(&l.dedupe_key()))).collect();
@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(a.jvm.len(), 3);
     }
 
-    /// 1.14–1.18 перелічують lwjgl 3.2.1 (лише macOS) перед 3.2.2, 1.13 — jar і natives окремими записами.
+    /// 1.14–1.18 перелічують lwjgl 3.2.1 (лише macOS) перед 3.2.2, а 1.13 має jar і natives окремими записами.
     #[test]
     fn merge_keeps_parent_variants() {
         let parent: VersionJson = serde_json::from_str(

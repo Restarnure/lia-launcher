@@ -63,7 +63,7 @@ fn file(paths: &Paths, id: &str) -> std::path::PathBuf {
 }
 
 fn check(id: &str) -> Result<()> {
-    // Windows відкидає крапки й пробіли в кінці: «...» — це сама тека instances.
+    // Windows відкидає крапки й пробіли в кінці, тож «...» означає саму теку instances.
     if id.is_empty() || id.contains(['/', '\\', ':']) || id.ends_with(['.', ' ']) {
         return Err(err("invalid", format!("неприпустимий ідентифікатор збірки: {id}")));
     }
@@ -106,7 +106,7 @@ pub fn validate_name(name: &str) -> Result<String> {
     Ok(name.to_string())
 }
 
-/// Вільна назва теки — тека одразу й створюється: дві збірки з однаковою назвою, що створюються
+/// Вільна назва теки. Тека одразу й створюється, щоб дві збірки з однаковою назвою, що створюються
 /// одночасно (імпорт модпаків), не потраплять в одну теку.
 fn free_id(paths: &Paths, name: &str) -> Result<String> {
     std::fs::create_dir_all(paths.instances()).ctx(|| paths.instances().display().to_string())?;
@@ -171,7 +171,7 @@ pub fn duplicate(paths: &Paths, id: &str, copy_suffix: &str) -> Result<Instance>
         let _ = std::fs::remove_dir_all(paths.instance_dir(&new_id));
         return Err(e);
     }
-    // Копія — звичайна збірка: кнопка закріпленого сервера й далі веде в оригінал.
+    // Копія стає звичайною збіркою: кнопка закріпленого сервера й далі веде в оригінал.
     let inst = Instance { id: new_id, name, created: util::now_ms(), last_played: None, play_time: 0, featured: None, ..src };
     save(paths, &inst)?;
     Ok(inst)
@@ -190,7 +190,7 @@ mod tests {
 
         let root = std::env::temp_dir().join(format!("lia-inst-{}", std::process::id()));
         let paths = Paths::new(root.clone());
-        // Однакова назва — різні теки, навіть якщо instance.json ще не записано.
+        // Однакова назва дає різні теки, навіть якщо instance.json ще не записано.
         assert_eq!(free_id(&paths, "Shotam").unwrap(), "shotam");
         assert_eq!(free_id(&paths, "Shotam").unwrap(), "shotam-2");
 

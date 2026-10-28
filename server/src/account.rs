@@ -59,7 +59,7 @@ pub fn valid_password(p: &str, name: &str) -> R<()> {
         return Err(bad("пароль не може містити нік"));
     }
     if COMMON.contains(&low.as_str()) || p.chars().all(|c| Some(c) == p.chars().next()) {
-        return Err(bad("цей пароль надто простий — його вгадають першим"));
+        return Err(bad("цей пароль надто простий, його вгадають першим"));
     }
     Ok(())
 }
@@ -107,11 +107,11 @@ fn take_code(app: &App, user: i64, purpose: &str, code: &str) -> R<String> {
         .optional()
         .map_err(internal)?;
     let Some((hash, email, expires, attempts)) = row else {
-        return Err(bad("код неправильний або застарів — надішліть новий"));
+        return Err(bad("код неправильний або застарів, надішліть новий"));
     };
     if expires < crate::now() || attempts >= 5 {
         db.execute("DELETE FROM codes WHERE user = ?1 AND purpose = ?2", params![user, purpose]).map_err(internal)?;
-        return Err(bad("код застарів або забагато спроб — надішліть новий"));
+        return Err(bad("код застарів або забагато спроб, надішліть новий"));
     }
     if !eq_ct(hash.as_bytes(), code_hash(user, code.trim()).as_bytes()) {
         db.execute("UPDATE codes SET attempts = attempts + 1 WHERE user = ?1 AND purpose = ?2", params![user, purpose]).map_err(internal)?;
@@ -226,7 +226,7 @@ pub async fn login(st: S, h: HeaderMap, Json(r): Json<LoginReq>) -> R<Json<Value
     };
     if locked_until > now {
         let mins = (locked_until - now) / 60_000 + 1;
-        return Err(ApiErr(StatusCode::TOO_MANY_REQUESTS, "Locked", format!("забагато невдалих спроб — вхід закрито ще на {mins} хв")));
+        return Err(ApiErr(StatusCode::TOO_MANY_REQUESTS, "Locked", format!("забагато невдалих спроб, вхід закрито ще на {mins} хв")));
     }
     // Спроба рахується до перевірки пароля й атомарно в базі: паралельні запити не дадуть більше LOCK_AFTER спроб.
     let n: Option<i64> = st
@@ -236,17 +236,17 @@ pub async fn login(st: S, h: HeaderMap, Json(r): Json<LoginReq>) -> R<Json<Value
         .query_row("UPDATE users SET failed = failed + 1 WHERE id = ?1 AND locked_until <= ?2 RETURNING failed", params![id, now], |r| r.get(0))
         .optional()
         .map_err(internal)?;
-    let n = n.filter(|n| *n <= LOCK_AFTER).ok_or_else(|| ApiErr(StatusCode::TOO_MANY_REQUESTS, "Locked", "забагато невдалих спроб — вхід закрито на 15 хв".into()))?;
+    let n = n.filter(|n| *n <= LOCK_AFTER).ok_or_else(|| ApiErr(StatusCode::TOO_MANY_REQUESTS, "Locked", "забагато невдалих спроб, вхід закрито на 15 хв".into()))?;
     if !verify_password(&r.password, &pass) {
         if n == LOCK_AFTER {
             let db = st.db.lock().unwrap();
             db.execute("UPDATE users SET failed = 0, locked_until = ?1 WHERE id = ?2", params![now + LOCK_FOR, id]).map_err(internal)?;
             drop(db);
-            // Лист — не частіше разу на добу (або після успішного входу): інакше будь-хто, знаючи нік,
+            // Лист не частіше разу на добу (або після успішного входу), бо інакше будь-хто, знаючи нік,
             // засипав би людину листами й вичерпав ліміт поштового сервісу.
             if let Some(u) = api::user_by_id(&st, id).filter(|u| u.verified && locked_until < now - 24 * 3600_000) {
                 if let Some(e) = &u.email {
-                    mail::send(&st, e, "Хтось намагається увійти у ваш ЛІЯ ID", &[format!("{}, у ваш ЛІЯ ID кілька разів ввели неправильний пароль. Вхід закрито на 15 хвилин.", u.name), "Якщо це були не ви — змініть пароль у лаунчері.".into()]);
+                    mail::send(&st, e, "Хтось намагається увійти у ваш ЛІЯ ID", &[format!("{}, у ваш ЛІЯ ID кілька разів ввели неправильний пароль. Вхід закрито на 15 хвилин.", u.name), "Якщо це були не ви, змініть пароль у лаунчері.".into()]);
                 }
             }
         }
@@ -259,7 +259,7 @@ pub async fn login(st: S, h: HeaderMap, Json(r): Json<LoginReq>) -> R<Json<Value
     let known: bool = st.db.lock().unwrap().query_row("SELECT 1 FROM tokens WHERE user = ?1 AND device = ?2 AND profile IS NULL", params![id, device], |_| Ok(())).is_ok();
     if !known && u.verified {
         if let Some(e) = &u.email {
-            mail::send(&st, e, "Новий вхід у ЛІЯ ID", &[format!("{}, у ваш ЛІЯ ID увійшли з пристрою «{device}».", u.name), "Якщо це були не ви — змініть пароль і вийдіть з усіх пристроїв у лаунчері (Акаунти → ЛІЯ ID).".into()]);
+            mail::send(&st, e, "Новий вхід у ЛІЯ ID", &[format!("{}, у ваш ЛІЯ ID увійшли з пристрою «{device}».", u.name), "Якщо це були не ви, змініть пароль і вийдіть з усіх пристроїв у лаунчері (Акаунти → ЛІЯ ID).".into()]);
         }
     }
     Ok(Json(new_session(&st, &u, &device, &ip)?))
@@ -297,7 +297,7 @@ pub async fn verify_email(st: S, h: HeaderMap, Json(r): Json<CodeReq>) -> R<Json
             return Err(ApiErr(StatusCode::CONFLICT, "Taken", "ця пошта вже прив'язана до іншого ЛІЯ ID".into()));
         }
         if let Some(o) = old.filter(|o| *o != email) {
-            mail::send(&st, &o, "Пошту ЛІЯ ID змінено", &[format!("{}, пошту вашого ЛІЯ ID змінено на {email}.", u.name), "Якщо це були не ви — відновіть доступ через «Забули пароль?» і напишіть нам.".into()]);
+            mail::send(&st, &o, "Пошту ЛІЯ ID змінено", &[format!("{}, пошту вашого ЛІЯ ID змінено на {email}.", u.name), "Якщо це були не ви, відновіть доступ через «Забули пароль?» і напишіть нам.".into()]);
         }
     } else {
         take_code(&st, u.id, "verify", &r.code)?;
@@ -372,7 +372,7 @@ pub async fn forgot(st: S, h: HeaderMap, Json(r): Json<ForgotReq>) -> R<StatusCo
         if st.limit(format!("mail:{}", u.id), 5, Duration::from_secs(3600)).is_ok() {
             if let Some(e) = &u.email {
                 let code = new_code(&st, u.id, "reset", e)?;
-                mail::code(&st, e, "Відновлення пароля ЛІЯ ID", &format!("{}, хтось попросив скинути пароль вашого ЛІЯ ID. Якщо це ви — введіть код у лаунчері.", u.name), &code);
+                mail::code(&st, e, "Відновлення пароля ЛІЯ ID", &format!("{}, хтось попросив скинути пароль вашого ЛІЯ ID. Якщо це ви, введіть код у лаунчері.", u.name), &code);
             }
         }
     }
@@ -389,11 +389,11 @@ pub struct ResetReq {
 pub async fn reset(st: S, h: HeaderMap, Json(r): Json<ResetReq>) -> R<StatusCode> {
     st.limit(format!("reset:{}", crate::client_ip(&h)), 20, Duration::from_secs(3600))?;
     let login = r.login.trim();
-    // Пароль — до коду (інакше слабкий пароль «спалив» би правильний код) і до пошуку акаунта
+    // Пароль перевіряємо до коду (щоб слабкий пароль не «спалив» правильний код) і до пошуку акаунта
     // (щоб відповідь не підказувала, чи такий акаунт є).
     valid_password(&r.password, login)?;
     let id = st.db.lock().unwrap().query_row("SELECT id FROM users WHERE name = ?1 OR email = ?2", params![login, login.to_lowercase()], |r| r.get::<_, i64>(0)).optional().map_err(internal)?;
-    let u = id.and_then(|id| api::user_by_id(&st, id)).ok_or_else(|| bad("код неправильний або застарів — надішліть новий"))?;
+    let u = id.and_then(|id| api::user_by_id(&st, id)).ok_or_else(|| bad("код неправильний або застарів, надішліть новий"))?;
     take_code(&st, u.id, "reset", &r.code)?;
     valid_password(&r.password, &u.name)?;
     let pass = hash_password(&r.password)?;
@@ -428,7 +428,7 @@ pub async fn change_password(st: S, h: HeaderMap, Json(r): Json<PasswordReq>) ->
         db.execute("DELETE FROM tokens WHERE user = ?1 AND hash != ?2", params![u.id, api::token_hash(token_from(&h))]).map_err(internal)?;
     }
     if let Some(e) = u.email.as_ref().filter(|_| u.verified) {
-        mail::send(&st, e, "Пароль ЛІЯ ID змінено", &[format!("{}, пароль вашого ЛІЯ ID змінено. Інші пристрої вийшли з акаунта.", u.name), "Якщо це були не ви — відновіть доступ через «Забули пароль?».".into()]);
+        mail::send(&st, e, "Пароль ЛІЯ ID змінено", &[format!("{}, пароль вашого ЛІЯ ID змінено. Інші пристрої вийшли з акаунта.", u.name), "Якщо це були не ви, відновіть доступ через «Забули пароль?».".into()]);
     }
     Ok(StatusCode::NO_CONTENT)
 }

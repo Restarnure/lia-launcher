@@ -59,7 +59,7 @@ export function UpdateModal() {
         className="prose selectable update-notes"
         dangerouslySetInnerHTML={{ __html: notes }}
         onClick={(e) => {
-          // Посилання — у браузері: інакше вікно лаунчера перейде на чужу сторінку без дороги назад.
+          // Посилання відкриваємо в браузері, бо інакше вікно лаунчера перейде на чужу сторінку без дороги назад.
           const a = (e.target as HTMLElement).closest("a");
           if (a) {
             e.preventDefault();

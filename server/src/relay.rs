@@ -40,7 +40,7 @@ pub async fn listen(app: Arc<App>, port: u16) {
     let l = TcpListener::bind(("0.0.0.0", port)).await.expect("порт ретранслятора");
     loop {
         let Ok((s, peer)) = l.accept().await else {
-            // Скінчилися дескриптори тощо — не крутимо цикл упусту.
+            // Скінчилися дескриптори чи щось подібне: не крутимо цикл упусту.
             tokio::time::sleep(Duration::from_millis(100)).await;
             continue;
         };
@@ -90,7 +90,7 @@ async fn route(app: &Arc<App>, mut s: TcpStream) -> std::io::Result<Option<Cont>
         let v: Value = serde_json::from_str(&line).unwrap_or_default();
         let s = r.into_inner();
         return Ok(match v["kind"].as_str() {
-            // Старі лаунчери версії не називають — їм світ не відкриваємо (просимо оновитися через API).
+            // Старі лаунчери версії не називають, тож світ їм не відкриваємо (про оновлення каже API).
             Some("host") if v["v"].as_str().and_then(crate::parse_version).is_some_and(|v| v >= app.cfg.min_launcher) => host(app.clone(), s, v["token"].as_str().unwrap_or("")),
             Some("data") => data(app.clone(), s, v["id"].as_str().unwrap_or("")),
             _ => None,

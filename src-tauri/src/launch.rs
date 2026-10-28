@@ -270,7 +270,7 @@ fn java_alive(pid: u32, started: i64) -> bool {
     sys.process(p).is_some_and(|proc_| proc_.name().to_string_lossy().to_lowercase().contains("java") && same_start(proc_.start_time(), started))
 }
 
-/// Після перезавантаження ПК pid з `.running` може дістатися чужій Java — звіряємо час старту (0 — невідомо).
+/// Після перезавантаження ПК pid з `.running` може дістатися чужій Java, тому звіряємо час старту (0 означає невідомо).
 fn same_start(start_secs: u64, started_ms: i64) -> bool {
     start_secs == 0 || (start_secs as i64 * 1000 - started_ms).abs() < 60_000
 }
@@ -492,7 +492,7 @@ fn crash_info(game: &Game, game_dir: &Path) -> CrashInfo {
             .map(|(_, p)| p)
     };
     let report_path = newest(game_dir.join("crash-reports"), "crash-").or_else(|| newest(game_dir.to_path_buf(), "hs_err_pid"));
-    // hs_err_pid пишеться в кодуванні системи (кирилиця в шляху) — read_to_string на ньому падає.
+    // hs_err_pid пишеться в кодуванні системи (кирилиця в шляху), і read_to_string на ньому падає.
     let report = report_path.as_ref().and_then(|p| std::fs::read(p).ok()).map(|b| String::from_utf8_lossy(&b).into_owned());
     let mut info = logparse::analyze(&log, report.as_deref());
     info.report_path = report_path.map(|p| p.display().to_string());
@@ -567,7 +567,7 @@ mod tests {
     fn window_size() {
         let paths = Paths::new("r".into());
         let count = |a: &[String]| a.iter().filter(|s| *s == "--width").count();
-        // Старі версії (minecraftArguments) не мають правила has_custom_resolution — розмір додаємо самі.
+        // Старі версії (minecraftArguments) не мають правила has_custom_resolution, тож розмір додаємо самі.
         let legacy = prep(r#"{"id":"1.12.2","mainClass":"net.minecraft.client.main.Main","minecraftArguments":"--username ${auth_player_name}"}"#);
         let a = build_args(&legacy, &paths, &opts(false));
         assert!(a.ends_with(&["--width".into(), "1280".into(), "--height".into(), "720".into()]), "{a:?}");
@@ -577,7 +577,7 @@ mod tests {
                 {"rules":[{"action":"allow","features":{"has_custom_resolution":true}}],"value":["--width","${resolution_width}","--height","${resolution_height}"]}]}}"#,
         );
         assert_eq!(count(&build_args(&modern, &paths, &opts(false))), 1);
-        // До 1.6 (аплет через launchwrapper) — не чіпаємо.
+        // До 1.6 (аплет через launchwrapper) не чіпаємо.
         let applet = prep(r#"{"id":"1.5.2","mainClass":"net.minecraft.launchwrapper.Launch","minecraftArguments":"${auth_player_name} ${auth_session}"}"#);
         assert_eq!(count(&build_args(&applet, &paths, &opts(false))), 0);
     }

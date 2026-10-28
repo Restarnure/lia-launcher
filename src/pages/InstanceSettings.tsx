@@ -35,7 +35,7 @@ export function InstanceSettings({ inst }: { inst: Instance }) {
   const total = info?.totalMemoryMb ?? 8192;
   const maxMem = Math.max(2048, Math.floor((total - 1024) / 512) * 512);
   const memory = inst.memoryMb ?? settings?.memoryMb ?? 2048;
-  // Повзунок — локально, як у загальних налаштуваннях: збереження на кожен крок смикало повзунок
+  // Повзунок тримаємо локально, як у загальних налаштуваннях. Збереження на кожен крок смикало повзунок
   // назад і слало паралельні записи, з яких останнім міг лягти не останній.
   const [mem, setMem] = useState(memory);
   useEffect(() => setMem(memory), [memory]);
@@ -51,7 +51,7 @@ export function InstanceSettings({ inst }: { inst: Instance }) {
             value={name}
             maxLength={48}
             onChange={(e) => setName(e.target.value)}
-            // Порожню назву ядро не прийме — повертаємо поточну, щоб поле не брехало.
+            // Порожню назву ядро не прийме, тож повертаємо поточну, щоб поле не брехало.
             onBlur={() => (name.trim() ? name !== inst.name && patch(inst.id, { name }) : setName(inst.name))}
             onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
           />

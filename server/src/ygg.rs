@@ -87,7 +87,7 @@ pub fn profile_by(app: &App, col: &str, val: &str) -> Option<Profile> {
 }
 
 /// Профіль, на який виписано ігровий токен. Ліцензійний профіль переходить до того, хто останнім довів
-/// ліцензію, — тоді токени попереднього власника вже не діють.
+/// ліцензію, і токени попереднього власника тоді вже не діють.
 pub fn token_profile(app: &App, token: &str) -> Option<Profile> {
     let db = app.db.lock().unwrap();
     let (pid, user): (i64, i64) = db.query_row("SELECT profile, user FROM tokens WHERE hash = ?1 AND profile IS NOT NULL", [api::token_hash(token)], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
@@ -172,7 +172,7 @@ pub async fn game_session(st: S, h: HeaderMap, Json(r): Json<SessionReq>) -> R<J
             }
             match profile_by(&st, "name", &r.name) {
                 Some(p) if p.user == user.id => p,
-                Some(p) if p.kind == "mojang" => return Err(ApiErr(StatusCode::CONFLICT, "NickTaken", format!("{} — нік ліцензійного гравця ЛІЇ", p.name))),
+                Some(p) if p.kind == "mojang" => return Err(ApiErr(StatusCode::CONFLICT, "NickTaken", format!("нік {} уже зайнятий ліцензійним гравцем ЛІЇ", p.name))),
                 Some(_) => return Err(ApiErr(StatusCode::CONFLICT, "NickTaken", "цей нік уже використовує інший гравець ЛІЇ".into())),
                 None => {
                     st.limit(format!("nick:{}", user.id), 20, std::time::Duration::from_secs(3600))?;

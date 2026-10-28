@@ -175,7 +175,7 @@ mod tests {
         assert!(safe_join(base, "mods/a.").is_ok());
     }
 
-    /// Кілька записів одного файлу одночасно: кожен має вдатися, а файл — бути цілим.
+    /// Кілька записів одного файлу одночасно: кожен має вдатися, а файл лишитися цілим.
     #[test]
     fn atomic_concurrent() {
         let path = std::env::temp_dir().join(format!("lia-atomic-{}.json", std::process::id()));

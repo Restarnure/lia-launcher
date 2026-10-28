@@ -106,7 +106,7 @@ export function Browse({ type: initialType, instanceId }: { type?: ProjectType; 
   // Новий порожній масив щоразу перезапустив би пошук удруге.
   useEffect(() => setCats((c) => (c.length ? [] : c)), [type]);
 
-  // Від збірки — лише версія й модлоадер: об'єкт збірки оновлюється з кожним instances-changed
+  // Від збірки беремо лише версію й модлоадер, бо об'єкт збірки оновлюється з кожним instances-changed
   // (запуск чи вихід із гри), і пошук скидався б на початок.
   const gameVersion = useTarget ? inst!.mcVersion : null;
   const loader = useTarget && type === "mod" ? inst!.loader : null;
@@ -155,7 +155,7 @@ export function Browse({ type: initialType, instanceId }: { type?: ProjectType; 
     setLoadingMore(true);
     try {
       const r = await api.search({ ...params, offset: hits.length });
-      // Поки вантажилось, змінили запит чи фільтри — ці результати вже не до речі.
+      // Поки вантажилось, змінили запит чи фільтри, і ці результати вже не до речі.
       if (id === reqId.current) setHits([...hits, ...r.hits]);
     } catch (e) {
       fail(e);
