@@ -14,6 +14,7 @@ pub mod modrinth;
 pub mod mojang;
 pub mod net;
 pub mod news;
+pub mod packs;
 pub mod paths;
 pub mod servers;
 pub mod settings;
@@ -122,6 +123,7 @@ pub fn run() {
             app::lia_public,
             app::lia_session,
             app::lia_request,
+            app::lia_publish_plan,
             app::lia_publish,
             app::lia_install_pack,
             app::lia_update_pack,

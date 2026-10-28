@@ -337,6 +337,21 @@ export interface LiaPack {
   subscribers: number;
 }
 
+export interface PackSelection {
+  include: string[];
+  exclude: string[];
+}
+
+/** Що є в теці збірки і звідки кожен файл отримає гравець. */
+export interface PublishPlan {
+  base: { projectId: string; versionId: string; name: string; versionName: string } | null;
+  files: { path: string; size: number; kind: "base" | "link" | "upload" | "stored" | "big" }[];
+  selection: PackSelection;
+  packId: string | null;
+  shareOptions: boolean;
+  options: { lang?: string; resourcePacks: string[] } | null;
+}
+
 export interface LiaEvent {
   id: number;
   user: string;
@@ -437,8 +452,9 @@ export const api = {
   liaLogout: () => invoke<void>("lia_logout"),
   liaSession: () => invoke<LiaSession | null>("lia_session"),
   lia: <T = Json>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown) => invoke<T>("lia_request", { method, path, body }),
-  liaPublish: (instanceId: string, visibility: "friends" | "public", description: string, packId?: string | null) =>
-    invoke<LiaPack>("lia_publish", { instanceId, visibility, description, packId }),
+  liaPublishPlan: (instanceId: string) => invoke<PublishPlan>("lia_publish_plan", { instanceId }),
+  liaPublish: (instanceId: string, visibility: "friends" | "public", description: string, packId: string | null, selection: PackSelection, shareOptions: boolean) =>
+    invoke<LiaPack>("lia_publish", { instanceId, visibility, description, packId, selection, shareOptions }),
   liaInstallPack: (packId: string) => invoke<Instance>("lia_install_pack", { packId }),
   liaUpdatePack: (instanceId: string) => invoke<Instance>("lia_update_pack", { instanceId }),
   liaShareWorld: (instanceId: string, port: number) => invoke<{ code: string; address: string; licensedOnly: boolean }>("lia_share_world", { instanceId, port }),

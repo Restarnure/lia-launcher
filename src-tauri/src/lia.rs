@@ -1,7 +1,7 @@
 //! ЛІЯ ID і соцмережа. ЛІЯ ID — акаунт лаунчера (друзі, збірки, скін для гравців ЛІЇ), окремо від
 //! ігрових акаунтів. Гра входить через authlib-injector ігровим профілем: офлайн-ніком (завжди, коли
-//! є ЛІЯ ID) або ліцензією (кнопка «Грати з друзями»). Тут же ретранслятор LAN-світів з боку хоста
-//! й експорт збірки в .mrpack.
+//! є ЛІЯ ID) або ліцензією (кнопка «Грати з друзями»). Тут же ретранслятор LAN-світів з боку хоста.
+//! Збірки живуть у packs.rs.
 use crate::accounts::Account;
 use crate::crypto;
 use crate::ctx::Ctx;
@@ -9,12 +9,11 @@ use crate::error::{err, Context, Result};
 use crate::instances::Instance;
 use crate::net::{self, Dl};
 use crate::paths::Paths;
-use crate::{modrinth, util};
+use crate::util;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Digest as _;
 use std::collections::HashMap;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -272,134 +271,6 @@ pub fn unshare(instance: &str) {
     }
 }
 
-// ---------------------------------------------------------------- експорт збірки
-
-const CONTENT_DIRS: &[&str] = &["mods", "resourcepacks", "shaderpacks"];
-
-fn loader_dep(inst: &Instance) -> Result<Option<(&'static str, String)>> {
-    let key = match inst.loader.as_str() {
-        "vanilla" => return Ok(None),
-        "fabric" => "fabric-loader",
-        "quilt" => "quilt-loader",
-        "forge" => "forge",
-        "neoforge" => "neoforge",
-        _ => return Ok(None),
-    };
-    // «Остання» версія модлоадера не записується в збірку — беремо її з профілю запуску.
-    let v = inst
-        .loader_version
-        .clone()
-        .or_else(|| inst.version_id.as_deref().and_then(|id| loader_version_of(&inst.loader, &inst.mc_version, id)))
-        .ok_or_else(|| err("lia", "спершу запустіть збірку один раз, тоді стане відома версія модлоадера"))?;
-    // У .mrpack Forge вказують без префікса версії гри.
-    let v = v.strip_prefix(&format!("{}-", inst.mc_version)).map(str::to_string).unwrap_or(v);
-    Ok(Some((key, v)))
-}
-
-/// Версія модлоадера з id профілю запуску: fabric-loader-0.16.10-1.21.4, quilt-loader-…,
-/// 1.20.1-forge-47.2.0, neoforge-21.1.77.
-fn loader_version_of(loader: &str, mc: &str, id: &str) -> Option<String> {
-    let v = match loader {
-        "fabric" => id.strip_prefix("fabric-loader-")?.strip_suffix(&format!("-{mc}"))?,
-        "quilt" => id.strip_prefix("quilt-loader-")?.strip_suffix(&format!("-{mc}"))?,
-        "forge" => id.strip_prefix(&format!("{mc}-forge-"))?,
-        "neoforge" => id.strip_prefix("neoforge-")?,
-        _ => return None,
-    };
-    (!v.is_empty()).then(|| v.to_string())
-}
-
-/// Файли конфігів, які не можна публікувати: деякі моди тримають у config/ токени й облікові дані.
-fn private_config(rel: &str) -> bool {
-    let n = rel.to_lowercase();
-    ["token", "secret", "password", "passwd", "credential", "session", "account", "auth", ".key", "apikey", "api_key", "webhook"].iter().any(|w| n.contains(w))
-}
-
-/// Усі файли теки, без посилань-ярликів (вони могли б вивести за межі теки гри).
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let Ok(t) = e.file_type() else { continue };
-        if t.is_symlink() {
-            continue;
-        }
-        if t.is_dir() {
-            walk(&e.path(), out);
-        } else {
-            out.push(e.path());
-        }
-    }
-}
-
-/// Збирає .mrpack: моди з Modrinth — посиланнями, решта (свої моди, config/) — у overrides.
-pub async fn export_mrpack(ctx: &Ctx, inst: &Instance) -> Result<Vec<u8>> {
-    let game = ctx.paths.game_dir(&inst.id);
-    let mut content: Vec<(String, PathBuf)> = vec![];
-    for d in CONTENT_DIRS {
-        for e in std::fs::read_dir(game.join(d)).into_iter().flatten().flatten() {
-            let p = e.path();
-            let name = e.file_name().to_string_lossy().to_string();
-            // Вимкнені (.disabled), теки ресурспаків і ярлики не публікуємо — лише робочі файли.
-            if e.file_type().is_ok_and(|t| t.is_file()) && !name.ends_with(".disabled") {
-                content.push((format!("{d}/{name}"), p));
-            }
-        }
-    }
-    let mut overrides: Vec<(String, PathBuf)> = vec![];
-    let mut cfg = vec![];
-    walk(&game.join("config"), &mut cfg);
-    for p in cfg {
-        if let Ok(rel) = p.strip_prefix(&game) {
-            let rel = rel.to_string_lossy().replace('\\', "/");
-            if !private_config(&rel) {
-                overrides.push((rel, p));
-            }
-        }
-    }
-    let hashes: Vec<(String, String, String, u64)> = content
-        .iter()
-        .map(|(rel, p)| {
-            let b = std::fs::read(p).ctx(|| p.display().to_string())?;
-            Ok((rel.clone(), hex::encode(sha1::Sha1::digest(&b)), hex::encode(sha2::Sha512::digest(&b)), b.len() as u64))
-        })
-        .collect::<Result<_>>()?;
-    let known = modrinth::identify(ctx, &hashes.iter().map(|h| h.1.clone()).collect::<Vec<_>>()).await.unwrap_or_default();
-    let mut files = vec![];
-    for ((rel, sha1, sha512, size), (_, path)) in hashes.into_iter().zip(content.iter()) {
-        let url = known.get(&sha1).and_then(|(ver, _)| ver["files"].as_array()?.iter().find(|f| f["hashes"]["sha1"] == sha1.as_str())?["url"].as_str().map(str::to_string));
-        match url {
-            Some(url) => files.push(json!({ "path": rel, "hashes": { "sha1": sha1, "sha512": sha512 }, "downloads": [url], "fileSize": size })),
-            None => overrides.push((rel, path.clone())),
-        }
-    }
-    let mut deps = json!({ "minecraft": inst.mc_version });
-    if let Some((k, v)) = loader_dep(inst)? {
-        deps[k] = json!(v);
-    }
-    let index = json!({
-        "formatVersion": 1,
-        "game": "minecraft",
-        "versionId": util::now_ms().to_string(),
-        "name": inst.name,
-        "files": files,
-        "dependencies": deps,
-    });
-    tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
-        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-        zip.start_file("modrinth.index.json", opts)?;
-        zip.write_all(serde_json::to_string_pretty(&index)?.as_bytes())?;
-        for (rel, p) in overrides {
-            let mut buf = vec![];
-            std::fs::File::open(&p).ctx(|| p.display().to_string())?.read_to_end(&mut buf)?;
-            zip.start_file(format!("overrides/{rel}"), opts)?;
-            zip.write_all(&buf)?;
-        }
-        Ok(zip.finish()?.into_inner())
-    })
-    .await
-    .map_err(|e| err("io", e.to_string()))?
-}
-
 /// Ідентифікатор збірки ЛІЇ, з якої встановлено цю збірку (поле modpack.projectId = "lia:<id>").
 pub fn pack_of(inst: &Instance) -> Option<String> {
     inst.modpack.as_ref()?.project_id.strip_prefix("lia:").map(str::to_string)
@@ -408,15 +279,6 @@ pub fn pack_of(inst: &Instance) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn loader_versions_from_profile() {
-        assert_eq!(loader_version_of("fabric", "1.21.4", "fabric-loader-0.16.10-1.21.4").as_deref(), Some("0.16.10"));
-        assert_eq!(loader_version_of("quilt", "1.20.1", "quilt-loader-0.26.0-1.20.1").as_deref(), Some("0.26.0"));
-        assert_eq!(loader_version_of("forge", "1.20.1", "1.20.1-forge-47.2.0").as_deref(), Some("47.2.0"));
-        assert_eq!(loader_version_of("neoforge", "1.21.1", "neoforge-21.1.77").as_deref(), Some("21.1.77"));
-        assert_eq!(loader_version_of("fabric", "1.21.4", "1.21.4"), None);
-    }
 
     /// Службове з'єднання лаунчера до підробленого ретранслятора: (привітання, сокет).
     async fn hello(relay: &tokio::net::TcpListener) -> (Value, BufReader<TcpStream>) {
@@ -496,12 +358,5 @@ mod tests {
         let _ctl3 = open("cccccc").await;
         assert_eq!(third.await.unwrap().unwrap().0, "cccccc");
         unshare("relay-test");
-    }
-
-    #[test]
-    fn private_configs() {
-        assert!(private_config("config/discord/token.txt"));
-        assert!(private_config("config/AuthMe/session.json"));
-        assert!(!private_config("config/sodium-options.json"));
     }
 }

@@ -1,11 +1,11 @@
 # Наскрізна перевірка сервера ЛІЇ: акаунт (пошта, вхід, пристрої, паролі), Yggdrasil (з перевіркою підпису
-# через openssl), друзі, статуси (WebSocket), ретранслятор, збірки.
+# через openssl), друзі, статуси (WebSocket), ретранслятор, збірки (маніфест і файли автора).
 # Локально: запустити lia-server з LIA_HTTP=127.0.0.1:18080 LIA_PLAY_DOMAIN=play.localhost LIA_MAIL_LOG=1,
 # вивід сервера — у файл, і `LIA_SERVER_LOG=<файл> python e2e.py` (коди з листів читаються з логу).
 # Інший порт ретранслятора: однаковий LIA_RELAY_PORT для сервера й тесту.
 # Бойовий: LIA_B=https://lia.starnure.dev SKIP_RELAY=1 python e2e.py (створює тестові акаунти — приберіть після).
 # Ліміт реєстрацій — 5 на годину з IP: між прогонами перезапускайте сервер.
-import base64, hashlib, io, json, os, socket, struct, subprocess, sys, threading, time, urllib.request, zipfile
+import base64, hashlib, json, os, socket, struct, subprocess, sys, threading, time, urllib.request
 
 B = os.environ.get("LIA_B", "http://127.0.0.1:18080")
 RELAY = (os.environ.get("LIA_RELAY_HOST", "127.0.0.1"), int(os.environ.get("LIA_RELAY_PORT", "25570")))
@@ -272,25 +272,46 @@ ctl.close()
 m = ws_recv(wb)
 assert "world" not in m["presence"], m
 
-# збірки
-buf = io.BytesIO()
-with zipfile.ZipFile(buf, "w") as z:
-    z.writestr("modrinth.index.json", json.dumps({"formatVersion": 1, "game": "minecraft", "versionId": "1", "name": "Тестова збірка", "files": [], "dependencies": {"minecraft": "1.21.1", "fabric-loader": "0.16.0"}}))
-s, pack = req("POST", "/api/packs?visibility=friends&description=%D0%BE%D0%BF%D0%B8%D1%81", raw=buf.getvalue(), token=ta, ctype="application/zip")
+# збірки: свої файли автор вантажить окремо (за SHA-1), маніфест посилається на них і на Modrinth
+cfg = b"x = 1\n"
+sha = hashlib.sha1(cfg).hexdigest()
+s, miss = req("POST", "/api/blobs/missing", {"hashes": [sha, "0" * 40, "не хеш"]}, token=ta)
+assert s == 200 and miss["missing"] == [sha, "0" * 40], miss
+assert req("PUT", f"/api/blobs/{'1' * 40}", raw=cfg, token=ta, ctype="application/octet-stream")[0] == 400  # хеш не збігся
+assert req("PUT", f"/api/blobs/{sha}", raw=cfg, token=ta, ctype="application/octet-stream")[0] == 204
+assert req("POST", "/api/blobs/missing", {"hashes": [sha]}, token=ta)[1]["missing"] == []
+mod = {"path": "mods/fabric-api.jar", "sha1": "a" * 40, "size": 5, "url": "https://cdn.modrinth.com/data/P7dR8mSH/x.jar"}
+own = {"path": "config/a.toml", "sha1": sha, "size": 999}
+man = {"name": "Тестова збірка", "mc": "1.21.1", "loader": "fabric", "loaderVersion": "0.16.0", "options": {"lang": "uk_ua", "resourcePacks": ["vanilla", "file/ru.zip"]}, "files": [mod, own]}
+for bad in [
+    {**own, "path": "../evil.jar"},
+    {**own, "path": "C:/Windows/x"},
+    {**mod, "url": "https://cdn.modrinth.com.evil.io/x.jar"},
+    {**own, "sha1": "b" * 40},  # не завантажено
+    {**own, "base": True},  # у збірці немає базового модпака
+]:
+    s, e = req("POST", "/api/packs", {"manifest": {**man, "files": [bad]}}, token=ta)
+    assert s == 400, (bad, e)
+assert req("POST", "/api/packs", {"manifest": {**man, "files": [own, {**own, "path": "CONFIG/A.toml"}]}}, token=ta)[0] == 400  # той самий файл у Windows
+s, pack = req("POST", "/api/packs", {"manifest": man, "visibility": "friends", "description": "опис"}, token=ta)
 assert s == 200 and pack["loader"] == "fabric" and pack["mcVersion"] == "1.21.1" and pack["version"] == 1, pack
+assert pack["size"] == 5 + len(cfg), pack  # розмір свого файлу рахує сервер, а не лаунчер
 s, lb = req("GET", "/api/packs", token=tb)
 assert [x["id"] for x in lb] == [pack["id"]]
 assert req("POST", f"/api/packs/{pack['id']}/subscribe", token=tb)[0] == 204
-s, upd = req("PUT", f"/api/packs/{pack['id']}", raw=buf.getvalue(), token=ta, ctype="application/zip")
-assert upd["version"] == 2
+s, upd = req("PUT", f"/api/packs/{pack['id']}", {"manifest": man}, token=ta)
+assert upd["version"] == 2 and upd["description"] == "опис", upd
 seen = set()
 for _ in range(3):
     seen.add(ws_recv(wb)["type"])
 assert "pack" in seen, seen
+s, m = req("GET", f"/api/packs/{pack['id']}/manifest", token=tb)
+assert s == 200 and m["version"] == 2 and m["files"][1]["size"] == len(cfg) and m["options"]["resourcePacks"][1] == "file/ru.zip", m
+s, blob = req("GET", f"/api/packs/{pack['id']}/blobs/{sha}", token=tb)
+assert s == 200 and blob == cfg
+assert req("GET", f"/api/packs/{pack['id']}/blobs/{'0' * 40}", token=tb)[0] == 404  # не зі збірки
 s, subs = req("GET", "/api/packs/subscribed", token=tb)
 assert subs[0]["version"] == 2 and subs[0]["subscribed"]
-s, file = req("GET", f"/api/packs/{pack['id']}/file", token=tb)
-assert s == 200 and file == buf.getvalue()
 s, feed = req("GET", "/api/feed", token=tb)
 assert {"pack_updated", "pack_published", "friend"} <= {e["kind"] for e in feed}, feed
 
@@ -300,7 +321,8 @@ s, rc = req("POST", "/api/register", {"name": "Carol" + run, "email": ec, "passw
 tc = rc["accessToken"]
 if me0["mailEnabled"]:
     req("POST", "/api/email/verify", {"code": mail_code(ec)}, token=tc)
-assert req("GET", f"/api/packs/{pack['id']}/file", token=tc)[0] == 404
+assert req("GET", f"/api/packs/{pack['id']}/manifest", token=tc)[0] == 404
+assert req("GET", f"/api/packs/{pack['id']}/blobs/{sha}", token=tc)[0] == 404
 
 # відхилений запит у друзі: той, хто просив, не може засипати повторними
 assert req("POST", f"/api/friends/{a}", token=tc)[0] == 204

@@ -8,14 +8,16 @@
 //!   (minecraft-protocol; входить логіном/паролем через Yggdrasil ЛІЇ, друкує BOT_OK).
 //! Використовує тестові акаунти ЛІЯ ID LiaTestHost і LiaTestGuest (створює, якщо їх немає) і нік LiaTestPirate.
 //!
-//! `pack_roundtrip` — експорт збірки в .mrpack (мод з Modrinth посиланням, свій мод і config файлами)
-//! і встановлення назад, як це робить друг.
+//! `pack_roundtrip`: автор публікує збірку (мод з Modrinth посиланням, свої файли на сервер ЛІЇ),
+//! друг встановлює її, автор додає русифікатор, друг оновлюється й отримує лише змінене.
+//! Підійде локальний сервер: LIA_API=http://127.0.0.1:<порт>.
 
 use lia_lib::ctx::Ctx;
 use lia_lib::instances::{self, NewInstance};
 use lia_lib::paths::Paths;
-use lia_lib::{lia, modrinth};
-use std::io::{BufRead, BufReader, Read};
+use lia_lib::lia;
+use lia_lib::packs::{self, Kind};
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -115,15 +117,33 @@ async fn world_through_relay() {
     assert!(joined, "сервер не прийняв гравця ЛІЯ ID");
 }
 
-#[tokio::test]
+
+/// Ті самі тестові акаунти між прогонами: на сервері ліміт реєстрацій з однієї IP.
+async fn account(http: &reqwest::Client, name: &str, pass: &str) -> lia::Session {
+    match lia::login(http, name, pass, None).await {
+        Ok(s) => s,
+        Err(_) => lia::login(http, name, pass, Some(&format!("{}@test.lia", name.to_lowercase()))).await.expect("реєстрація"),
+    }
+}
+
+fn put(dir: &std::path::Path, rel: &str, bytes: &[u8]) {
+    let p = dir.join(rel);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(p, bytes).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn pack_roundtrip() {
-    let ctx = ctx("pack");
-    let mut inst = instances::create(&ctx.paths, NewInstance { name: "Тест".into(), mc_version: "1.21.4".into(), loader: "fabric".into(), loader_version: Some("0.16.10".into()), icon: None }).unwrap();
-    inst.loader_version = Some("0.16.10".into());
-    let game = ctx.paths.game_dir(&inst.id);
-    // Мод з Modrinth (Fabric API для 1.21.4) — має піти посиланням.
-    let ver: serde_json::Value = ctx
+    let author = ctx("pack-author");
+    let friend = ctx("pack-friend");
+    let host = account(&author.http, "LiaTestHost", "test-password-1").await;
+    let guest = account(&friend.http, "LiaTestGuest", "test-password-2").await;
+    let task = author.task("pack");
+    let inst = instances::create(&author.paths, NewInstance { name: "Тест".into(), mc_version: "1.21.4".into(), loader: "fabric".into(), loader_version: Some("0.16.10".into()), icon: None }).unwrap();
+    let game = author.paths.game_dir(&inst.id);
+    // Мод з Modrinth (Fabric API для 1.21.4) має піти посиланням.
+    let ver: serde_json::Value = author
         .http
         .get("https://api.modrinth.com/v2/project/fabric-api/version?game_versions=%5B%221.21.4%22%5D&loaders=%5B%22fabric%22%5D")
         .send()
@@ -133,36 +153,136 @@ async fn pack_roundtrip() {
         .await
         .unwrap();
     let f = &ver[0]["files"][0];
-    let bytes = ctx.http.get(f["url"].as_str().unwrap()).send().await.unwrap().bytes().await.unwrap();
-    std::fs::create_dir_all(game.join("mods")).unwrap();
-    std::fs::write(game.join("mods").join(f["filename"].as_str().unwrap()), &bytes).unwrap();
-    std::fs::write(game.join("mods").join("my-own-mod.jar"), b"not on modrinth").unwrap();
-    std::fs::write(game.join("mods").join("off.jar.disabled"), b"disabled").unwrap();
-    std::fs::create_dir_all(game.join("config").join("sub")).unwrap();
-    std::fs::write(game.join("config").join("sub").join("a.toml"), b"x = 1").unwrap();
+    let fapi = format!("mods/{}", f["filename"].as_str().unwrap());
+    let fapi_bytes = author.http.get(f["url"].as_str().unwrap()).send().await.unwrap().bytes().await.unwrap();
+    put(&game, &fapi, &fapi_bytes);
+    put(&game, "mods/my-own-mod.jar", b"not on modrinth");
+    put(&game, "mods/off.jar.disabled", b"disabled");
+    put(&game, "config/sub/a.toml", b"x = 1");
+    put(&game, "config/gone.toml", b"old");
+    put(&game, "resourcepacks/Folder/pack.mcmeta", b"{}");
+    put(&game, "saves/w/level.dat", b"world");
+    put(&game, "logs/latest.log", b"log");
+    put(&game, "options.txt", b"lang:uk_ua\nresourcePacks:[\"vanilla\",\"file/Folder\"]\n");
 
-    let pack = lia::export_mrpack(&ctx, &inst).await.expect("експорт");
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(pack.clone())).unwrap();
-    let mut index = String::new();
-    zip.by_name("modrinth.index.json").unwrap().read_to_string(&mut index).unwrap();
-    let index: serde_json::Value = serde_json::from_str(&index).unwrap();
-    println!("  index: {index}");
-    assert_eq!(index["dependencies"]["fabric-loader"], "0.16.10");
-    assert_eq!(index["files"].as_array().unwrap().len(), 1, "Fabric API має бути посиланням");
-    assert!(index["files"][0]["downloads"][0].as_str().unwrap().starts_with("https://cdn.modrinth.com/"));
-    assert!(zip.by_name("overrides/mods/my-own-mod.jar").is_ok());
-    assert!(zip.by_name("overrides/config/sub/a.toml").is_ok());
-    assert!(zip.by_name("overrides/mods/off.jar.disabled").is_err());
+    let plan = packs::plan(&author, &inst, &host.token, &task).await.expect("план");
+    let kind = |p: &str| plan.files.iter().find(|f| f.path == p).map(|f| f.kind);
+    assert_eq!(kind(&fapi), Some(Kind::Link));
+    assert!(matches!(kind("mods/my-own-mod.jar"), Some(Kind::Upload | Kind::Stored)));
+    assert!(kind("saves/w/level.dat").is_none() && kind("logs/latest.log").is_none() && kind("options.txt").is_none());
+    let pack = packs::publish(&author, &inst, &host.token, "public", "тест", None, plan.selection.clone(), true, &task).await.expect("публікація");
+    let id = pack["id"].as_str().unwrap().to_string();
+    println!("  опубліковано {id}");
 
-    let path: PathBuf = ctx.paths.root.join("p.mrpack");
-    std::fs::write(&path, &pack).unwrap();
-    let task = ctx.task("import");
-    let back = modrinth::import_mrpack(&ctx, &path, None, &task).await.expect("імпорт");
-    let g2 = ctx.paths.game_dir(&back.id);
-    assert_eq!(std::fs::read(g2.join("mods").join(f["filename"].as_str().unwrap())).unwrap(), bytes.to_vec());
-    assert_eq!(std::fs::read(g2.join("mods").join("my-own-mod.jar")).unwrap(), b"not on modrinth");
-    assert_eq!(std::fs::read(g2.join("config").join("sub").join("a.toml")).unwrap(), b"x = 1");
-    assert_eq!(back.loader, "fabric");
-    assert!(back.version_id.is_some(), "модлоадер не встановлено");
-    println!("  збірку відновлено: {} ({})", back.name, back.version_id.unwrap());
+    // Друг встановлює збірку.
+    let ftask = friend.task("install");
+    let mut mine = packs::install(&friend, &guest.token, &id, "LiaTestHost", &ftask).await.expect("встановлення");
+    let g2 = friend.paths.game_dir(&mine.id);
+    let read = |rel: &str| std::fs::read(g2.join(rel)).unwrap_or_default();
+    assert_eq!(read(&fapi), fapi_bytes.to_vec());
+    for (rel, want) in [("mods/my-own-mod.jar", &b"not on modrinth"[..]), ("mods/off.jar.disabled", b"disabled"), ("config/sub/a.toml", b"x = 1"), ("resourcepacks/Folder/pack.mcmeta", b"{}")] {
+        assert_eq!(read(rel), want, "{rel}");
+    }
+    assert!(!g2.join("saves").exists() && !g2.join("logs").exists());
+    let opts = String::from_utf8(read("options.txt")).unwrap();
+    assert!(opts.contains("lang:uk_ua") && opts.contains(r#"resourcePacks:["vanilla","file/Folder"]"#) && opts.contains("onboardAccessibility:false"), "{opts}");
+    assert!(mine.version_id.is_some(), "модлоадер не встановлено");
+    assert_eq!(mine.modpack.as_ref().unwrap().version_id, "1");
+    let fapi_time = std::fs::metadata(g2.join(&fapi)).unwrap().modified().unwrap();
+
+    // Друг додав свій мод і змінив мову.
+    put(&g2, "mods/friend-own.jar", b"mine");
+    let opts = opts.replace("lang:uk_ua", "lang:en_us");
+    std::fs::write(g2.join("options.txt"), &opts).unwrap();
+
+    // Автор додав русифікатор (ресурспак, увімкнений у грі), змінив свій мод і прибрав конфіг.
+    put(&game, "resourcepacks/ru.zip", b"russian");
+    put(&game, "mods/my-own-mod.jar", b"v2");
+    std::fs::remove_file(game.join("config/gone.toml")).unwrap();
+    put(&game, "options.txt", b"lang:uk_ua\nresourcePacks:[\"vanilla\",\"file/Folder\",\"file/ru.zip\"]\n");
+    let p2 = packs::publish(&author, &inst, &host.token, "public", "тест", Some(id.clone()), plan.selection.clone(), true, &task).await.expect("v2");
+    assert_eq!(p2["version"], 2);
+
+    packs::update(&friend, &guest.token, &mut mine, "LiaTestHost", &ftask).await.expect("оновлення");
+    assert_eq!(read("resourcepacks/ru.zip"), b"russian");
+    assert_eq!(read("mods/my-own-mod.jar"), b"v2");
+    assert!(!g2.join("config/gone.toml").exists(), "видалений автором файл лишився");
+    assert_eq!(read("mods/friend-own.jar"), b"mine", "свій мод друга зник");
+    assert_eq!(std::fs::metadata(g2.join(&fapi)).unwrap().modified().unwrap(), fapi_time, "незмінений мод качався знову");
+    let opts = String::from_utf8(read("options.txt")).unwrap();
+    assert!(opts.contains("lang:en_us") && opts.contains(r#"resourcePacks:["vanilla","file/Folder","file/ru.zip"]"#), "{opts}");
+    assert_eq!(mine.modpack.as_ref().unwrap().version_id, "2");
+    println!("  оновлено до v2: русифікатор на місці й увімкнений");
+
+    lia::call(&author.http, reqwest::Method::DELETE, &format!("/api/packs/{id}"), Some(&host.token), None).await.expect("видалення");
+}
+
+/// Справжня збірка з базовим модпаком (LIA_TEST_INSTANCE — тека збірки, напр. Prominence II). Працює з копією.
+/// Автор публікує, друг встановлює з нуля, автор додає русифікатор, друг оновлюється без перекачування модпака.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn real_pack_roundtrip() {
+    let author = ctx("real-author");
+    let friend = ctx("real-friend");
+    let src = PathBuf::from(env("LIA_TEST_INSTANCE"));
+    let id = src.file_name().unwrap().to_string_lossy().to_string();
+    lia_lib::util::copy_dir(&src, &author.paths.instance_dir(&id)).unwrap();
+    let inst = instances::get(&author.paths, &id).unwrap();
+    let game = author.paths.game_dir(&id);
+    let host = account(&author.http, "LiaTestHost", "test-password-1").await;
+    let guest = account(&friend.http, "LiaTestGuest", "test-password-2").await;
+    let task = author.task("pack");
+
+    let t0 = Instant::now();
+    let plan = packs::plan(&author, &inst, &host.token, &task).await.expect("план");
+    let sum = |k: Kind| plan.files.iter().filter(|f| f.kind == k && plan.selection.picks(&f.path)).fold((0, 0), |a, f| (a.0 + 1, a.1 + f.size));
+    println!("  план за {:?}: база {:?}", t0.elapsed(), plan.base.as_ref().map(|b| (&b.name, &b.version_name)));
+    for k in [Kind::Base, Kind::Link, Kind::Upload, Kind::Stored, Kind::Big] {
+        println!("    {k:?}: {:?}", sum(k));
+    }
+    println!("    вибрано: {:?}", plan.selection.include);
+    assert!(plan.base.is_some(), "збірка з Modrinth, а базу не знайдено");
+    assert!(sum(Kind::Upload).1 < 100 * 1000 * 1000, "завантажилося б забагато");
+    let pack = packs::publish(&author, &inst, &host.token, "public", "", None, plan.selection.clone(), true, &task).await.expect("публікація");
+    let pid = pack["id"].as_str().unwrap().to_string();
+    println!("  опубліковано {pid}, розмір у гравця {}", pack["size"]);
+
+    let t0 = Instant::now();
+    let ftask = friend.task("install");
+    let mut mine = packs::install(&friend, &guest.token, &pid, "LiaTestHost", &ftask).await.expect("встановлення");
+    println!("  друг встановив за {:?}", t0.elapsed());
+    let g2 = friend.paths.game_dir(&mine.id);
+    let m = packs::fetch_manifest(&friend, &guest.token, &pid).await.unwrap();
+    let mut bad = vec![];
+    for f in &m.files {
+        let p = g2.join(&f.path);
+        if f.path != "options.txt" && f.path != "servers.dat" && lia_lib::util::sha1_file(&p).ok().as_deref() != Some(f.sha1.as_str()) {
+            bad.push(f.path.clone());
+        }
+    }
+    assert!(bad.is_empty(), "не збігаються з маніфестом: {bad:?}");
+    // Те, що в автора, те й у друга (у вибраних теках).
+    for f in plan.files.iter().filter(|f| plan.selection.picks(&f.path)) {
+        assert!(g2.join(&f.path).exists(), "у друга немає {}", f.path);
+    }
+
+    // Автор додав русифікатор і ввімкнув його в грі.
+    put(&game, "resourcepacks/Russifier.zip", b"russifier");
+    let opts = std::fs::read_to_string(game.join("options.txt")).unwrap_or_default();
+    let packs_line = opts.lines().find(|l| l.starts_with("resourcePacks:")).map(str::to_string).unwrap_or_else(|| "resourcePacks:[\"vanilla\"]".into());
+    let mut list: Vec<String> = serde_json::from_str(packs_line.trim_start_matches("resourcePacks:")).unwrap();
+    list.push("file/Russifier.zip".into());
+    let opts = if opts.contains("resourcePacks:") { opts.replace(&packs_line, &format!("resourcePacks:{}", serde_json::to_string(&list).unwrap())) } else { format!("{opts}resourcePacks:{}\n", serde_json::to_string(&list).unwrap()) };
+    std::fs::write(game.join("options.txt"), opts).unwrap();
+    let t0 = Instant::now();
+    let p2 = packs::publish(&author, &inst, &host.token, "public", "", Some(pid.clone()), plan.selection.clone(), true, &task).await.expect("v2");
+    println!("  v{} за {:?}", p2["version"], t0.elapsed());
+
+    let t0 = Instant::now();
+    packs::update(&friend, &guest.token, &mut mine, "LiaTestHost", &ftask).await.expect("оновлення");
+    println!("  друг оновився за {:?}", t0.elapsed());
+    assert_eq!(std::fs::read(g2.join("resourcepacks/Russifier.zip")).unwrap(), b"russifier");
+    let o2 = std::fs::read_to_string(g2.join("options.txt")).unwrap();
+    assert!(o2.lines().any(|l| l.starts_with("resourcePacks:") && l.contains("file/Russifier.zip")), "русифікатор не ввімкнено");
+    lia::call(&author.http, reqwest::Method::DELETE, &format!("/api/packs/{pid}"), Some(&host.token), None).await.expect("видалення");
 }

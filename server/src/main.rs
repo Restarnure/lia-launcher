@@ -4,6 +4,7 @@ mod account;
 mod api;
 mod db;
 mod mail;
+mod packs;
 mod relay;
 mod ygg;
 
@@ -136,7 +137,7 @@ async fn main() {
         play_domain: env("LIA_PLAY_DOMAIN", "play.localhost"),
         relay_port: env("LIA_RELAY_PORT", "25570").parse().expect("LIA_RELAY_PORT"),
         data: PathBuf::from(env("LIA_DATA", "data")),
-        min_launcher: parse_version(&env("LIA_MIN_LAUNCHER", "1.1.4")).expect("LIA_MIN_LAUNCHER"),
+        min_launcher: parse_version(&env("LIA_MIN_LAUNCHER", "1.1.5")).expect("LIA_MIN_LAUNCHER"),
     };
     std::fs::create_dir_all(cfg.data.join("packs")).expect("тека даних");
     let (key, public_pem) = ygg::load_key(&cfg.data.join("signing.pem"));
@@ -156,6 +157,7 @@ async fn main() {
         limits: Mutex::new(HashMap::new()),
         relay: relay::Hub::default(),
     });
+    packs::migrate(&app);
 
     // Прибирання застарілих join-ів і лічильників спроб.
     let a = app.clone();
@@ -203,11 +205,14 @@ async fn main() {
         .route("/api/users/{name}", get(api::user))
         .route("/api/friends", get(api::friends))
         .route("/api/friends/{name}", post(api::friend_add).delete(api::friend_remove))
-        // Великі тіла — лише для завантаження збірок; решта запитів — з типовим лімітом axum (2 МБ).
-        .route("/api/packs", get(api::packs).post(api::pack_publish).layer(DefaultBodyLimit::max(api::PACK_MAX)))
+        // Маніфести збірок і списки хешів більші за типовий ліміт axum (2 МБ). Файли йдуть потоком, без ліміту на тіло.
+        .route("/api/packs", get(api::packs).post(packs::pack_publish).layer(DefaultBodyLimit::max(packs::MANIFEST_MAX)))
         .route("/api/packs/subscribed", get(api::packs_subscribed))
-        .route("/api/packs/{id}", put(api::pack_update).layer(DefaultBodyLimit::max(api::PACK_MAX)).delete(api::pack_delete).get(api::pack_get))
-        .route("/api/packs/{id}/file", get(api::pack_file))
+        .route("/api/packs/{id}", put(packs::pack_update).layer(DefaultBodyLimit::max(packs::MANIFEST_MAX)).delete(packs::pack_delete).get(api::pack_get))
+        .route("/api/packs/{id}/manifest", get(packs::pack_manifest))
+        .route("/api/packs/{id}/blobs/{sha1}", get(packs::pack_blob))
+        .route("/api/blobs/missing", post(packs::blobs_missing).layer(DefaultBodyLimit::max(packs::MANIFEST_MAX)))
+        .route("/api/blobs/{sha1}", put(packs::blob_put))
         .route("/api/packs/{id}/subscribe", post(api::pack_subscribe).delete(api::pack_unsubscribe))
         .route("/api/feed", get(api::feed))
         .route("/api/ws", get(api::ws))

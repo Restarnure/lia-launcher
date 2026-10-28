@@ -90,6 +90,8 @@ Client ID схваленого застосунку Azure вшитий у `BUILT
 
 Така гра запускається з `-javaagent:authlib-injector.jar=https://lia.starnure.dev/yggdrasil` і `-Dhttp.agent=LIA-Launcher/…` (Cloudflare відсікає голий `Java/1.8…`).
 
+Збірки друзів (`server/src/packs.rs`, у лаунчері `src-tauri/src/packs.rs`). Версія збірки це маніфест, повний список файлів, які отримає гравець. Кожен файл або за посиланням (Modrinth, GitHub), або з архіву базового модпака Modrinth, з якого зроблено збірку, або з сервера ЛІЇ. Свої файли автор вантажить на сервер по одному (`PUT /api/blobs/<sha1>`, до 95 МБ, 1 ГБ на автора), тому межа Cloudflare в 100 МБ на запит діє лише на окремий файл. Гравець при оновленні качає тільки ті файли, що в нього відрізняються, і прибирає файли попередньої версії, яких більше немає. Мова й нові ресурспаки автора дописуються в його `options.txt`. Що встановлено, лаунчер пам'ятає в `instances/<id>/lia-pack.json`, а вибір тек автора в `lia-publish.json`. Збірки до 1.1.5 (один `.mrpack`) сервер сам розкладає на маніфест під час старту.
+
 Перевірки:
 
 ```bash
@@ -103,7 +105,7 @@ python server/e2e.py
 cd src-tauri && cargo test --test lia -- --ignored --nocapture --test-threads=1
 ```
 
-Експорт і встановлення збірки, а також світ через ретранслятор: Paper в online-mode з authlib-injector і бот, що заходить як гравець ЛІЯ ID. Змінні описані в `tests/lia.rs`. `LIA_E2E_LIA=1` у `tests/e2e.rs` запускає гру з ЛІЯ ID.
+Публікація, встановлення й оновлення збірки (`pack_roundtrip`; `real_pack_roundtrip` бере копію справжньої збірки з `LIA_TEST_INSTANCE`, напр. модпак з Modrinth), а також світ через ретранслятор: Paper в online-mode з authlib-injector і бот, що заходить як гравець ЛІЯ ID. Змінні описані в `tests/lia.rs`. `LIA_E2E_LIA=1` у `tests/e2e.rs` запускає гру з ЛІЯ ID.
 
 Редактор скінів: `node scripts/skinmap.check.ts` перевіряє розкладку текстури й дзеркало.
 

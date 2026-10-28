@@ -999,6 +999,97 @@ a.hint:hover {
   border-color: var(--yellow);
 }
 
+/* ------------------------------------------------------------ вміст збірки (публікація) */
+
+.pack-tree {
+  max-height: 320px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-2);
+}
+
+.pack-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+}
+
+.pack-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pack-chevron {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--text-3);
+}
+
+button.pack-chevron:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.pack-chevron svg {
+  transition: transform 0.12s;
+}
+
+.pack-chevron.open svg {
+  transform: rotate(90deg);
+}
+
+.check.pack-check {
+  flex: 1;
+  min-width: 0;
+  min-height: 28px;
+  padding: 3px 6px;
+  font-size: 13px;
+}
+
+.check.pack-check.some .box {
+  background: rgba(250, 204, 21, 0.35);
+  border-color: var(--yellow);
+}
+
+.pack-kind {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--text-2);
+}
+
+.pack-kind.upload {
+  background: rgba(250, 204, 21, 0.14);
+  color: var(--yellow);
+}
+
+.pack-kind.link {
+  background: rgba(34, 197, 94, 0.14);
+  color: #4ade80;
+}
+
+.pack-kind.big {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.pack-size {
+  flex: none;
+  width: 72px;
+  text-align: right;
+  font-size: 12px;
+}
+
 /* ------------------------------------------------------------ оновлення */
 
 .update-pill {
