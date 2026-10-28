@@ -13,7 +13,7 @@ fn log_only() -> bool {
 }
 
 fn from() -> String {
-    std::env::var("LIA_MAIL_FROM").unwrap_or_else(|_| "ЛІЯ <noreply@starnure.dev>".into())
+    std::env::var("LIA_MAIL_FROM").unwrap_or_else(|_| "ЛІЯ <noreply@lia.starnure.dev>".into())
 }
 
 fn esc(s: &str) -> String {
