@@ -80,13 +80,13 @@ Client ID схваленого застосунку Azure вшитий у `BUILT
 - `*.play.lia.starnure.dev:25570` напряму: ретранслятор LAN-світів. Код світу береться з адреси в handshake Minecraft, службові з'єднання лаунчера починаються з байтів `00 LIA`.
 - У VCN Oracle і в `DOCKER-USER` (`/etc/iptables/rules.v4`) відкрито TCP 25570.
 
-Ключ підпису текстур `/srv/lia/data/signing.pem` створюється один раз (`openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096`), база й файли — у `/srv/lia/data`.
+Ключ підпису текстур `/srv/lia/data/signing.pem` створюється один раз (`openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096`), а база й файли лежать у `/srv/lia/data`.
 
 Оновити сервер: скопіювати `server/{Cargo.toml,Cargo.lock,src,Dockerfile}` у `/srv/lia/server` і `docker compose up -d --build`.
 
 Старіших лаунчерів сервер не пускає: API і Yggdrasil відповідають 426 з проханням оновитися, ретранслятор не відкриває їм світ. Мінімальна версія за замовчуванням прописана в `server/src/main.rs`, а без нової збірки сервера її можна підняти рядком `LIA_MIN_LAUNCHER=1.2.0` у `/srv/lia/lia.env` і перезапуском контейнера. Робіть це лише тоді, коли потрібна версія вже опублікована, інакше ЛІЯ ID перестане працювати в усіх.
 
-ЛІЯ ID — акаунт лаунчера (токен без профілю, `/api/…`) з підтвердженням пошти, відновленням і зміною пароля, списком пристроїв, блокуванням після 8 невдалих входів і видаленням акаунта (`server/src/account.rs`). Листи — через Resend: ключ `RESEND_API_KEY` у `/srv/lia/lia.env` (без нього пошта вимкнена, а акаунти не потребують підтвердження). Для тестів `LIA_MAIL_LOG=1` друкує листи в лог. Гра входить ігровим профілем: офлайн-нік закріплюється за ЛІЯ ID (`/api/game/session`), ліцензія — лише кнопкою «З друзями», через join на сервері Mojang з serverId від ЛІЇ (`/api/game/challenge`), без передачі токена Mojang. Ігрові токени не відкривають `/api/…`. Невідомого гравця `hasJoined` перевіряє в Mojang і перепідписує профіль ключем ЛІЇ — так ліцензія без ЛІЇ заходить у світи гравців ЛІЇ.
+ЛІЯ ID, акаунт лаунчера (токен без профілю, `/api/…`), має підтвердження пошти, відновлення й зміну пароля, список пристроїв, блокування після 8 невдалих входів і видалення акаунта (`server/src/account.rs`). Листи надсилає Resend: ключ `RESEND_API_KEY` у `/srv/lia/lia.env` (без нього пошта вимкнена, а акаунти не потребують підтвердження). Для тестів `LIA_MAIL_LOG=1` друкує листи в лог. Гра входить ігровим профілем: офлайн-нік закріплюється за ЛІЯ ID (`/api/game/session`), ліцензія входить лише кнопкою «З друзями», через join на сервері Mojang з serverId від ЛІЇ (`/api/game/challenge`), без передачі токена Mojang. Ігрові токени не відкривають `/api/…`. Невідомого гравця `hasJoined` перевіряє в Mojang і перепідписує профіль ключем ЛІЇ, тому ліцензія без ЛІЇ заходить у світи гравців ЛІЇ.
 
 Така гра запускається з `-javaagent:authlib-injector.jar=https://lia.starnure.dev/yggdrasil` і `-Dhttp.agent=LIA-Launcher/…` (Cloudflare відсікає голий `Java/1.8…`).
 
@@ -112,4 +112,4 @@ cd src-tauri && cargo test --test lia -- --ignored --nocapture --test-threads=1
 - `src-tauri/src/`: ядро на Rust (Tauri 2): `mojang/` (версії, бібліотеки, ресурси, Java), `loaders.rs`, `launch.rs`, `modrinth.rs`, `content.rs`, `accounts.rs`, `skinlib.rs`, `servers.rs`, `app.rs` (команди для інтерфейсу).
 - `src/`: інтерфейс на React і TypeScript: `pages/`, `components/`, `lib/`.
 - `scripts/release.mjs`: випуск оновлення.
-- `server/`: сервер ЛІЇ (ЛІЯ ID, друзі, збірки, ретранслятор); `src-tauri/src/lia.rs` і `src/lib/lia.ts` — його клієнт у лаунчері.
+- `server/`: сервер ЛІЇ (ЛІЯ ID, друзі, збірки, ретранслятор). Його клієнт у лаунчері: `src-tauri/src/lia.rs` і `src/lib/lia.ts`.
