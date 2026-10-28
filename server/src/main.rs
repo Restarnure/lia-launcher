@@ -136,7 +136,7 @@ async fn main() {
         play_domain: env("LIA_PLAY_DOMAIN", "play.localhost"),
         relay_port: env("LIA_RELAY_PORT", "25570").parse().expect("LIA_RELAY_PORT"),
         data: PathBuf::from(env("LIA_DATA", "data")),
-        min_launcher: parse_version(&env("LIA_MIN_LAUNCHER", "1.1.3")).expect("LIA_MIN_LAUNCHER"),
+        min_launcher: parse_version(&env("LIA_MIN_LAUNCHER", "1.1.4")).expect("LIA_MIN_LAUNCHER"),
     };
     std::fs::create_dir_all(cfg.data.join("packs")).expect("тека даних");
     let (key, public_pem) = ygg::load_key(&cfg.data.join("signing.pem"));
