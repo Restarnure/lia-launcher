@@ -43,10 +43,13 @@ export async function checkForUpdate(manual = false) {
 export async function installUpdate() {
   const st = getState().update;
   if (st.status !== "available") return;
-  const update = st.update;
+  let update = st.update;
   let done = 0;
   let total = 0;
   try {
+    // Знайдене раніше оновлення могло застаріти, поки лаунчер був відкритий. Ставимо найновішу версію, а не по одній.
+    setState({ update: { status: "downloading", update, done: 0, total: 0 } });
+    update = (await check({ timeout: 20000 }).catch(() => null)) ?? update;
     await update.downloadAndInstall((ev) => {
       if (ev.event === "Started") total = ev.data.contentLength ?? 0;
       if (ev.event === "Progress") done += ev.data.chunkLength;
