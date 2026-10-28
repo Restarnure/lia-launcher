@@ -1,11 +1,11 @@
 //! API ЛІЇ для лаунчера: друзі, статуси, збірки, стрічка. Акаунт — у account.rs.
 use crate::ygg::hex;
 use crate::{bad, forbidden, internal, not_found, ApiErr, App, R, S};
-use axum::body::{Body, Bytes};
+use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query};
-use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::Response;
 use axum::Json;
 use futures::{SinkExt, StreamExt};
 use rusqlite::{params, OptionalExtension};
@@ -13,14 +13,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-/// Більше однаково не пропустить Cloudflare (100 МБ на тіло запиту в безкоштовному плані).
-pub const PACK_MAX: usize = 100 * 1000 * 1000;
-const PACK_QUOTA: i64 = 1024 * 1024 * 1024;
 
 // ------------------------------------------------------------ користувачі й токени
 
@@ -129,21 +123,21 @@ fn relation(app: &App, me: i64, other: i64) -> Rel {
     }
 }
 
-fn friend_ids(app: &App, me: i64) -> Vec<i64> {
+pub(crate) fn friend_ids(app: &App, me: i64) -> Vec<i64> {
     let db = app.db.lock().unwrap();
     let mut q = db.prepare("SELECT CASE WHEN a = ?1 THEN b ELSE a END FROM friends WHERE (a = ?1 OR b = ?1) AND accepted = 1").unwrap();
     q.query_map([me], |r| r.get(0)).unwrap().flatten().collect()
 }
 
 /// Повідомлення в усі відкриті WebSocket-и користувача.
-fn notify(app: &App, user: i64, msg: &Value) {
+pub(crate) fn notify(app: &App, user: i64, msg: &Value) {
     if let Some(list) = app.sockets.lock().unwrap().get_mut(&user) {
         let s = msg.to_string();
         list.retain(|tx| tx.send(s.clone()).is_ok());
     }
 }
 
-fn event(app: &App, user: i64, kind: &str, pack: Option<&str>, data: Value) {
+pub(crate) fn event(app: &App, user: i64, kind: &str, pack: Option<&str>, data: Value) {
     let _ = app.db.lock().unwrap().execute("INSERT INTO events (user, kind, pack, data, created) VALUES (?1, ?2, ?3, ?4, ?5)", params![user, kind, pack, data.to_string(), crate::now()]);
 }
 
@@ -405,35 +399,7 @@ pub fn world_closed(app: &App, user: i64, code: &str) {
 
 // ------------------------------------------------------------ збірки
 
-struct PackMeta {
-    name: String,
-    mc: String,
-    loader: String,
-}
-
-/// Читає modrinth.index.json з .mrpack: назва, версія гри, модлоадер.
-fn read_mrpack(mut f: impl Read + Seek) -> R<PackMeta> {
-    // Кінець zip64 може оголосити мільйони записів, і вже розбір каталогу з'їдає сотні МБ пам'яті.
-    // Збірці вистачає звичайного zip (до 65535 файлів), тож записи кінця з ознаками zip64 не приймаємо.
-    let len = f.seek(SeekFrom::End(0)).map_err(internal)?;
-    f.seek(SeekFrom::Start(len.saturating_sub(68 * 1024))).map_err(internal)?;
-    let mut tail = vec![];
-    f.read_to_end(&mut tail).map_err(internal)?;
-    if tail.windows(22).any(|w| w.starts_with(b"PK\x05\x06") && (w[10..12] == [0xFF; 2] || w[12..16] == [0xFF; 4] || w[16..20] == [0xFF; 4])) {
-        return Err(bad("у збірці забагато файлів"));
-    }
-    let mut zip = zip::ZipArchive::new(f).map_err(|_| bad("це не .mrpack"))?;
-    let mut s = String::new();
-    zip.by_name("modrinth.index.json").map_err(|_| bad("у файлі немає modrinth.index.json"))?.take(4 * 1024 * 1024).read_to_string(&mut s).map_err(|_| bad("пошкоджений modrinth.index.json"))?;
-    let v: Value = serde_json::from_str(&s).map_err(|_| bad("пошкоджений modrinth.index.json"))?;
-    let deps = &v["dependencies"];
-    let mc: String = deps["minecraft"].as_str().ok_or_else(|| bad("не вказано версію Minecraft"))?.chars().take(32).collect();
-    let loader = ["fabric-loader", "quilt-loader", "forge", "neoforge"].iter().find(|l| deps[**l].is_string()).map(|l| l.trim_end_matches("-loader").to_string()).unwrap_or_else(|| "vanilla".into());
-    let name: String = v["name"].as_str().unwrap_or("Збірка").chars().take(64).collect();
-    Ok(PackMeta { name, mc, loader })
-}
-
-fn pack_visible(app: &App, me: &User, owner: i64, visibility: &str) -> bool {
+pub(crate) fn pack_visible(app: &App, me: &User, owner: i64, visibility: &str) -> bool {
     owner == me.id || visibility == "public" || relation(app, me.id, owner) == Rel::Friends
 }
 
@@ -493,10 +459,6 @@ pub async fn packs_subscribed(st: S, h: HeaderMap) -> R<Json<Value>> {
     Ok(Json(json!(list_packs(&st, &me, "EXISTS(SELECT 1 FROM subs s WHERE s.pack = p.id AND s.user = ?1)", None)?)))
 }
 
-fn pack_path(app: &App, id: &str) -> std::path::PathBuf {
-    app.cfg.data.join("packs").join(format!("{id}.mrpack"))
-}
-
 fn valid_id(id: &str) -> R<()> {
     if id.len() == 12 && id.chars().all(|c| c.is_ascii_hexdigit()) {
         Ok(())
@@ -506,131 +468,12 @@ fn valid_id(id: &str) -> R<()> {
 }
 
 /// (власник, видимість) збірки.
-fn pack_owner(app: &App, id: &str) -> R<(i64, String)> {
+pub(crate) fn pack_owner(app: &App, id: &str) -> R<(i64, String)> {
     valid_id(id)?;
     app.db.lock().unwrap().query_row("SELECT owner, visibility FROM packs WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(internal)?.ok_or_else(not_found)
 }
 
-fn visibility(q: &HashMap<String, String>) -> &'static str {
-    if q.get("visibility").is_some_and(|v| v == "public") {
-        "public"
-    } else {
-        "friends"
-    }
-}
-
-/// Тимчасовий файл збірки прибирається сам: і при помилці, і коли запит обірвали посеред завантаження.
-struct TmpFile(std::path::PathBuf);
-
-impl Drop for TmpFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
-/// Приймає збірку в тимчасовий файл, а не в пам'ять (буває до 100 МБ), перевіряє й ставить на місце.
-/// Повертає метадані й розмір.
-async fn save_pack(app: &App, me: &User, id: &str, body: Body, replacing: i64) -> R<(PackMeta, i64)> {
-    let tmp = TmpFile(app.cfg.data.join("packs").join(format!("{}.tmp", hex(&rand::random::<[u8; 8]>()))));
-    let mut f = tokio::fs::File::create(&tmp.0).await.map_err(internal)?;
-    let mut size = 0;
-    let mut s = body.into_data_stream();
-    while let Some(chunk) = s.next().await {
-        let chunk = chunk.map_err(|_| bad("збірку не вдалося отримати"))?;
-        size += chunk.len();
-        if size > PACK_MAX {
-            return Err(bad("збірка завелика (до 100 МБ)"));
-        }
-        f.write_all(&chunk).await.map_err(internal)?;
-    }
-    f.flush().await.map_err(internal)?;
-    drop(f);
-    let meta = read_mrpack(std::fs::File::open(&tmp.0).map_err(internal)?)?;
-    let used: i64 = app.db.lock().unwrap().query_row("SELECT coalesce(sum(size), 0) FROM packs WHERE owner = ?1", [me.id], |r| r.get(0)).map_err(internal)?;
-    if used - replacing + size as i64 > PACK_QUOTA {
-        return Err(bad("перевищено місце для збірок (1 ГБ)"));
-    }
-    std::fs::rename(&tmp.0, pack_path(app, id)).map_err(internal)?;
-    Ok((meta, size as i64))
-}
-
-fn notify_friends(app: &App, me: &User, msg: &Value) {
-    for f in friend_ids(app, me.id) {
-        notify(app, f, msg);
-    }
-}
-
-// `Body`, а не `Bytes`: інакше axum читав би все тіло в пам'ять ще до перевірки входу.
-pub async fn pack_publish(st: S, h: HeaderMap, Query(q): Query<HashMap<String, String>>, body: Body) -> R<Json<Value>> {
-    let me = auth(&st, &h)?;
-    st.limit(format!("pack:{}", me.id), 30, Duration::from_secs(3600))?;
-    let id = hex(&rand::random::<[u8; 6]>());
-    let (meta, size) = save_pack(&st, &me, &id, body, 0).await?;
-    let desc: String = q.get("description").map(|d| d.chars().take(500).collect()).unwrap_or_default();
-    let now = crate::now();
-    st.db
-        .lock()
-        .unwrap()
-        .execute(
-            "INSERT INTO packs (id, owner, name, description, mc_version, loader, visibility, version, size, created, updated) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9, ?9)",
-            params![id, me.id, meta.name, desc, meta.mc, meta.loader, visibility(&q), size, now],
-        )
-        .map_err(internal)?;
-    event(&st, me.id, "pack_published", Some(&id), json!({ "name": meta.name, "version": 1 }));
-    notify_friends(&st, &me, &json!({ "type": "feed" }));
-    pack_get_inner(&st, &me, &id)
-}
-
-pub async fn pack_update(st: S, h: HeaderMap, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>, body: Body) -> R<Json<Value>> {
-    let me = auth(&st, &h)?;
-    let (owner, _) = pack_owner(&st, &id)?;
-    if owner != me.id {
-        return Err(forbidden("це не ваша збірка"));
-    }
-    st.limit(format!("pack:{}", me.id), 30, Duration::from_secs(3600))?;
-    let old: i64 = st.db.lock().unwrap().query_row("SELECT size FROM packs WHERE id = ?1", [&id], |r| r.get(0)).map_err(internal)?;
-    let (meta, size) = save_pack(&st, &me, &id, body, old).await?;
-    let version: i64 = {
-        let db = st.db.lock().unwrap();
-        db.execute(
-            "UPDATE packs SET name = ?1, mc_version = ?2, loader = ?3, size = ?4, version = version + 1, updated = ?5,
-                              visibility = coalesce(?6, visibility), description = coalesce(?7, description) WHERE id = ?8",
-            params![meta.name, meta.mc, meta.loader, size, crate::now(), q.get("visibility").map(|_| visibility(&q)), q.get("description").map(|d| d.chars().take(500).collect::<String>()), id],
-        )
-        .map_err(internal)?;
-        db.query_row("SELECT version FROM packs WHERE id = ?1", [&id], |r| r.get(0)).map_err(internal)?
-    };
-    event(&st, me.id, "pack_updated", Some(&id), json!({ "name": meta.name, "version": version }));
-    let subs: Vec<i64> = {
-        let db = st.db.lock().unwrap();
-        let mut q = db.prepare("SELECT user FROM subs WHERE pack = ?1").map_err(internal)?;
-        let v = q.query_map([&id], |r| r.get(0)).map_err(internal)?.flatten().collect();
-        v
-    };
-    let msg = json!({ "type": "pack", "id": id, "version": version });
-    for s in subs {
-        notify(&st, s, &msg);
-    }
-    notify_friends(&st, &me, &json!({ "type": "feed" }));
-    pack_get_inner(&st, &me, &id)
-}
-
-pub async fn pack_delete(st: S, h: HeaderMap, Path(id): Path<String>) -> R<StatusCode> {
-    let me = auth(&st, &h)?;
-    let (owner, _) = pack_owner(&st, &id)?;
-    if owner != me.id {
-        return Err(forbidden("це не ваша збірка"));
-    }
-    {
-        let db = st.db.lock().unwrap();
-        db.execute("DELETE FROM events WHERE pack = ?1", [&id]).map_err(internal)?;
-        db.execute("DELETE FROM packs WHERE id = ?1", [&id]).map_err(internal)?;
-    }
-    let _ = std::fs::remove_file(pack_path(&st, &id));
-    Ok(StatusCode::NO_CONTENT)
-}
-
-fn pack_get_inner(app: &App, me: &User, id: &str) -> R<Json<Value>> {
+pub(crate) fn pack_get_inner(app: &App, me: &User, id: &str) -> R<Json<Value>> {
     valid_id(id)?;
     let list = list_packs(app, me, &format!("p.id = '{id}'"), None)?;
     list.into_iter().next().map(Json).ok_or_else(not_found)
@@ -639,24 +482,6 @@ fn pack_get_inner(app: &App, me: &User, id: &str) -> R<Json<Value>> {
 pub async fn pack_get(st: S, h: HeaderMap, Path(id): Path<String>) -> R<Json<Value>> {
     let me = auth(&st, &h)?;
     pack_get_inner(&st, &me, &id)
-}
-
-pub async fn pack_file(st: S, h: HeaderMap, Path(id): Path<String>) -> R<Response> {
-    let me = auth(&st, &h)?;
-    let (owner, vis) = pack_owner(&st, &id)?;
-    if !pack_visible(&st, &me, owner, &vis) {
-        return Err(not_found());
-    }
-    let f = tokio::fs::File::open(pack_path(&st, &id)).await.map_err(|_| not_found())?;
-    let len = f.metadata().await.map_err(internal)?.len();
-    // Потоком, а не цілим файлом у пам'яті: кілька одночасних завантажень великої збірки вичерпали б пам'ять сервера.
-    let stream = futures::stream::try_unfold(f, |mut f| async move {
-        let mut buf = vec![0u8; 64 * 1024];
-        let n = f.read(&mut buf).await?;
-        buf.truncate(n);
-        Ok::<_, std::io::Error>((n > 0).then(|| (Bytes::from(buf), f)))
-    });
-    Ok(([(header::CONTENT_TYPE, "application/x-modrinth-modpack+zip".to_string()), (header::CONTENT_LENGTH, len.to_string())], Body::from_stream(stream)).into_response())
 }
 
 pub async fn pack_subscribe(st: S, h: HeaderMap, Path(id): Path<String>) -> R<StatusCode> {
@@ -706,28 +531,4 @@ pub async fn feed(st: S, h: HeaderMap) -> R<Json<Value>> {
         out.push(json!({ "id": id, "user": user, "kind": kind, "pack": pack, "data": serde_json::from_str::<Value>(&data).unwrap_or_default(), "created": created }));
     }
     Ok(Json(json!(out)))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::io::{Cursor, Write};
-
-    fn mrpack(mc: &str) -> Vec<u8> {
-        let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        z.start_file("modrinth.index.json", zip::write::SimpleFileOptions::default()).unwrap();
-        z.write_all(serde_json::json!({ "name": "Тест", "dependencies": { "minecraft": mc, "fabric-loader": "0.16.0" } }).to_string().as_bytes()).unwrap();
-        z.finish().unwrap().into_inner()
-    }
-
-    #[test]
-    fn mrpack_meta() {
-        let m = super::read_mrpack(Cursor::new(mrpack("1.21.1"))).unwrap();
-        assert_eq!((m.name.as_str(), m.mc.as_str(), m.loader.as_str()), ("Тест", "1.21.1", "fabric"));
-        assert_eq!(super::read_mrpack(Cursor::new(mrpack(&"1".repeat(100_000)))).unwrap().mc.len(), 32);
-        // Кінець архіву з ознакою zip64 (0xFFFF записів) відхиляємо ще до розбору каталогу.
-        let mut b = mrpack("1.21.1");
-        let n = b.len();
-        b[n - 12..n - 10].copy_from_slice(&[0xFF, 0xFF]);
-        assert_eq!(super::read_mrpack(Cursor::new(b)).err().unwrap().2, "у збірці забагато файлів");
-    }
 }

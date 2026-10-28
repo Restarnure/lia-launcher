@@ -1266,68 +1266,60 @@ fn valid_pack_id(id: &str) -> Result<()> {
     }
 }
 
-/// Опублікувати збірку друзям (або оновити вже опубліковану `pack_id`).
+/// Що є в теці збірки і звідки кожен файл отримає гравець: для вікна публікації.
 #[tauri::command]
-pub async fn lia_publish(state: S<'_>, instance_id: String, visibility: String, description: String, pack_id: Option<String>) -> Result<Value> {
+pub async fn lia_publish_plan(state: S<'_>, instance_id: String) -> Result<crate::packs::Plan> {
     let ctx = state.ctx();
     let inst = instances::get(&ctx.paths, &instance_id)?;
-    let bytes = crate::lia::export_mrpack(&ctx, &inst).await?;
-    let token = lia_token()?;
-    let base = crate::lia::api();
-    let q = [("visibility", visibility), ("description", description)];
-    let req = match &pack_id {
-        Some(id) => {
-            valid_pack_id(id)?;
-            state.http.put(format!("{base}/api/packs/{id}"))
-        }
-        None => state.http.post(format!("{base}/api/packs")),
-    };
-    crate::lia::parse(req.query(&q).bearer_auth(token).body(bytes).send().await?).await
+    let task = ctx.task_for(inst.name.clone(), &inst.id);
+    let r = crate::packs::plan(&ctx, &inst, &lia_token()?, &task).await;
+    task.finish(&r);
+    r
 }
 
-async fn lia_download_pack(state: &AppState, ctx: &Ctx, id: &str) -> Result<(Value, PathBuf)> {
+/// Опублікувати збірку друзям (або випустити нову версію вже опублікованої `pack_id`).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn lia_publish(
+    state: S<'_>,
+    instance_id: String,
+    visibility: String,
+    description: String,
+    pack_id: Option<String>,
+    selection: crate::packs::Selection,
+    share_options: bool,
+) -> Result<Value> {
+    if let Some(id) = &pack_id {
+        valid_pack_id(id)?;
+    }
+    let ctx = state.ctx();
+    let inst = instances::get(&ctx.paths, &instance_id)?;
+    let task = ctx.task_for(inst.name.clone(), &inst.id);
+    let r = crate::packs::publish(&ctx, &inst, &lia_token()?, &visibility, &description, pack_id, selection, share_options, &task).await;
+    task.finish(&r);
+    r
+}
+
+/// Автор збірки (для підпису версії в списку збірок).
+async fn pack_owner(state: &AppState, id: &str) -> Result<String> {
     valid_pack_id(id)?;
     let meta = lia_call(state, reqwest::Method::GET, &format!("/api/packs/{id}"), None).await?;
-    let token = lia_token()?;
-    let resp = state.http.get(format!("{}/api/packs/{id}/file", crate::lia::api())).bearer_auth(token).send().await?;
-    if !resp.status().is_success() {
-        crate::lia::parse(resp).await?;
-        return Err(err("lia", "не вдалося завантажити збірку"));
-    }
-    let tmp = ctx.paths.temp().join(format!("lia-{id}-{}.mrpack", util::now_ms()));
-    if let Some(p) = tmp.parent() {
-        std::fs::create_dir_all(p)?;
-    }
-    std::fs::write(&tmp, resp.bytes().await?)?;
-    Ok((meta, tmp))
-}
-
-fn pack_label(meta: &Value) -> String {
-    format!("v{} · {}", meta["version"], meta["owner"].as_str().unwrap_or(""))
+    Ok(meta["owner"].as_str().unwrap_or("").to_string())
 }
 
 /// Встановити збірку друга як нову збірку.
 #[tauri::command]
 pub async fn lia_install_pack(state: S<'_>, pack_id: String) -> Result<Instance> {
     let ctx = state.ctx();
-    let (meta, tmp) = lia_download_pack(&state, &ctx, &pack_id).await?;
-    let task = ctx.task(meta["name"].as_str().unwrap_or("").to_string());
-    let modpack = instances::ModpackRef {
-        project_id: format!("lia:{pack_id}"),
-        version_id: meta["version"].to_string(),
-        name: meta["name"].as_str().unwrap_or("").into(),
-        version_name: pack_label(&meta),
-        icon_url: None,
-    };
-    let r = modrinth::import_mrpack(&ctx, &tmp, Some(modpack), &task).await;
-    let _ = std::fs::remove_file(&tmp);
+    let owner = pack_owner(&state, &pack_id).await?;
+    let task = ctx.task(owner.clone());
+    let r = crate::packs::install(&ctx, &lia_token()?, &pack_id, &owner, &task).await;
     task.finish(&r);
     state.app.emit("instances-changed", ()).ok();
     r
 }
 
-/// Оновити збірку, встановлену зі збірки друга, до нової версії. Моди замінюються повністю,
-/// світи й налаштування лишаються.
+/// Оновити збірку, встановлену зі збірки друга: качаються лише змінені файли, світи й налаштування лишаються.
 #[tauri::command]
 pub async fn lia_update_pack(state: S<'_>, instance_id: String) -> Result<Instance> {
     let ctx = state.ctx();
@@ -1336,32 +1328,11 @@ pub async fn lia_update_pack(state: S<'_>, instance_id: String) -> Result<Instan
     if launch::get(&instance_id).is_some() {
         return Err(err("already_running", "закрийте гру перед оновленням"));
     }
-    // Поки моди в запасній теці, збірку не запустити й не видалити.
+    // Поки файли міняються, збірку не запустити й не видалити.
     let _busy = Busy::new(&state.preparing, &instance_id)?;
-    let (meta, tmp) = lia_download_pack(&state, &ctx, &pack).await?;
+    let owner = pack_owner(&state, &pack).await?;
     let task = ctx.task_for(inst.name.clone(), &inst.id);
-    // Старі моди — у запасну теку: якщо оновлення обірветься, збірка не лишиться без модів.
-    let mods = ctx.paths.game_dir(&inst.id).join("mods");
-    let backup = ctx.paths.game_dir(&inst.id).join(format!("mods.lia-backup-{}", util::now_ms()));
-    if mods.exists() {
-        std::fs::rename(&mods, &backup)?;
-    }
-    let r: Result<()> = async {
-        modrinth::apply_mrpack(&ctx, &tmp, &mut inst, &task).await?;
-        if let Some(m) = inst.modpack.as_mut() {
-            m.version_id = meta["version"].to_string();
-            m.version_name = pack_label(&meta);
-        }
-        instances::save(&ctx.paths, &inst)
-    }
-    .await;
-    if r.is_ok() {
-        let _ = std::fs::remove_dir_all(&backup);
-    } else if backup.exists() {
-        let _ = std::fs::remove_dir_all(&mods);
-        let _ = std::fs::rename(&backup, &mods);
-    }
-    let _ = std::fs::remove_file(&tmp);
+    let r = crate::packs::update(&ctx, &lia_token()?, &mut inst, &owner, &task).await;
     task.finish(&r);
     state.app.emit("instances-changed", ()).ok();
     r.map(|_| inst)

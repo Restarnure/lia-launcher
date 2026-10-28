@@ -135,7 +135,7 @@ async fn best_version(ctx: &Ctx, project_id: &str, inst: &Instance, kind: Kind) 
     Ok(pick)
 }
 
-fn primary_file(v: &Value) -> Option<&Value> {
+pub(crate) fn primary_file(v: &Value) -> Option<&Value> {
     let files = v["files"].as_array()?;
     files.iter().find(|f| f["primary"] == true).or(files.first())
 }
@@ -240,28 +240,28 @@ pub async fn install(ctx: &Ctx, inst: &Instance, project_id: &str, version_id: O
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MrIndex {
-    name: String,
+pub(crate) struct MrIndex {
+    pub(crate) name: String,
     #[serde(default)]
-    version_id: String,
-    files: Vec<MrFile>,
-    dependencies: HashMap<String, String>,
+    pub(crate) version_id: String,
+    pub(crate) files: Vec<MrFile>,
+    pub(crate) dependencies: HashMap<String, String>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MrFile {
-    path: String,
-    hashes: HashMap<String, String>,
+pub(crate) struct MrFile {
+    pub(crate) path: String,
+    pub(crate) hashes: HashMap<String, String>,
     #[serde(default)]
-    env: Option<HashMap<String, String>>,
-    downloads: Vec<String>,
+    pub(crate) env: Option<HashMap<String, String>>,
+    pub(crate) downloads: Vec<String>,
     #[serde(default)]
-    file_size: Option<u64>,
+    pub(crate) file_size: Option<u64>,
 }
 
 /// Хости, з яких модпак може тягнути файли (специфікація формату .mrpack).
-fn allowed_host(url: &str) -> bool {
+pub(crate) fn allowed_host(url: &str) -> bool {
     let Ok(u) = url::Url::parse(url) else { return false };
     u.scheme() == "https" && matches!(u.host_str(), Some("cdn.modrinth.com" | "github.com" | "raw.githubusercontent.com" | "gitlab.com"))
 }
@@ -283,21 +283,30 @@ pub async fn install_modpack(ctx: &Ctx, version_id: &str, task: &Arc<Task>) -> R
     };
     let icon_url = modpack.icon_url.clone();
     let r = import_mrpack(ctx, &tmp, Some(modpack), task).await;
+    // Список файлів модпака знадобиться, коли збіркою поділяться: тоді не доведеться качати архів удруге.
+    if r.is_ok() {
+        let _ = crate::packs::cache_base(ctx, version_id, &tmp).await;
+    }
     let _ = std::fs::remove_file(&tmp);
     let mut inst = r?;
-    // Іконка модпака замість стандартного блока (не критично, якщо не вийшло).
-    if let Some(url) = icon_url.filter(|u| u.starts_with("https://cdn.modrinth.com/")) {
-        if let Ok(bytes) = net::get_bytes(&ctx.http, &url).await {
-            if util::write_atomic(&ctx.paths.instance_dir(&inst.id).join("icon.png"), &bytes).is_ok() {
-                inst.icon = format!("custom:{}", util::now_ms());
-                instances::save(&ctx.paths, &inst)?;
-            }
-        }
-    }
+    set_icon(ctx, &mut inst, icon_url).await?;
     Ok(inst)
 }
 
-fn read_index(path: &Path) -> Result<MrIndex> {
+/// Іконка модпака замість стандартного блока (не критично, якщо не вийшло).
+pub(crate) async fn set_icon(ctx: &Ctx, inst: &mut Instance, url: Option<String>) -> Result<()> {
+    if let Some(url) = url.filter(|u| u.starts_with("https://cdn.modrinth.com/")) {
+        if let Ok(bytes) = net::get_bytes(&ctx.http, &url).await {
+            if util::write_atomic(&ctx.paths.instance_dir(&inst.id).join("icon.png"), &bytes).is_ok() {
+                inst.icon = format!("custom:{}", util::now_ms());
+                instances::save(&ctx.paths, inst)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn read_index(path: &Path) -> Result<MrIndex> {
     let mut zip = zip::ZipArchive::new(std::fs::File::open(path).ctx(|| path.display().to_string())?)?;
     let e = zip.by_name("modrinth.index.json").map_err(|_| err("invalid_modpack", "це не модпак Modrinth (немає modrinth.index.json)"))?;
     let mut s = String::new();

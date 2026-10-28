@@ -490,8 +490,9 @@ pub async fn delete_account(st: S, h: HeaderMap, Json(r): Json<DeleteReq>) -> R<
     };
     st.db.lock().unwrap().execute("DELETE FROM users WHERE id = ?1", [u.id]).map_err(internal)?;
     for p in packs {
-        let _ = std::fs::remove_file(st.cfg.data.join("packs").join(format!("{p}.mrpack")));
+        let _ = std::fs::remove_file(crate::packs::manifest_path(&st, &p));
     }
+    let _ = std::fs::remove_dir_all(crate::packs::blob_dir(&st, u.id));
     st.presence.lock().unwrap().remove(&u.id);
     if let Some(e) = u.email.as_ref().filter(|_| u.verified) {
         mail::send(&st, e, "ЛІЯ ID видалено", &[format!("{}, ваш ЛІЯ ID і всі його дані видалено.", u.name)]);

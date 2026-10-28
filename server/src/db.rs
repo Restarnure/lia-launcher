@@ -95,6 +95,22 @@ pub fn open(path: &Path) -> Connection {
          );",
     )
     .expect("схема 1.1.2");
+    // 1.1.5: збірка складається з маніфесту й окремих файлів автора.
+    c.execute_batch(
+        "CREATE TABLE IF NOT EXISTS blobs (
+            owner INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            sha1 TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            created INTEGER NOT NULL,
+            PRIMARY KEY (owner, sha1)
+         );
+         CREATE TABLE IF NOT EXISTS pack_files (
+            pack TEXT NOT NULL REFERENCES packs(id) ON DELETE CASCADE,
+            sha1 TEXT NOT NULL,
+            PRIMARY KEY (pack, sha1)
+         );",
+    )
+    .expect("схема 1.1.5");
     // 1.1.1: токени гри прив'язані до ігрового профілю; токени акаунта — без нього.
     let has_profile: bool = c.prepare("SELECT 1 FROM pragma_table_info('tokens') WHERE name = 'profile'").unwrap().exists([]).unwrap();
     if !has_profile {
