@@ -4,7 +4,6 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AlertTriangle, Boxes, CheckCircle2, Compass, Copy, Download, FileText, Home, Info, Minus, Settings as SettingsIcon, Shirt, Square, Terminal, Users, X, XCircle } from "lucide-react";
 import { api, type ContentKind } from "../lib/api";
 import { bytes } from "../lib/format";
-import { liaState } from "../lib/lia";
 import { t, type Key } from "../lib/i18n";
 import { dismissToast, fail, getState, navigate, refreshInstances, setState, toast, useStore } from "../lib/store";
 import { Modal, Progress, SkinHead, stageLabel } from "./ui";
@@ -233,7 +232,7 @@ function kindFor(file: string, tab?: string): ContentKind | "mrpack" | null {
 }
 
 // Бібліотека скінів має сенс лише з акаунтом Microsoft: офлайн-акаунту скін не поставити.
-const hasMicrosoft = (s: ReturnType<typeof getState>) => s.accounts.accounts.some((a) => a.kind === "microsoft") || !!liaState().session;
+const hasMicrosoft = (s: ReturnType<typeof getState>) => s.accounts.accounts.some((a) => a.kind === "microsoft");
 
 export function DropHandler() {
   const [hover, setHover] = useState<string[] | null>(null);

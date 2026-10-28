@@ -6,8 +6,6 @@ import { api, type Account, type LibSkin, type SkinInfo, type SkinsState } from 
 import { t } from "../lib/i18n";
 import { skinThumb } from "../lib/skinrender";
 import { fail, navigate, refreshAccounts, setState, toast, useStore } from "../lib/store";
-import { useLia } from "../lib/lia";
-import { LiaIdCard } from "../components/LiaId";
 import { confirmDialog, Empty, loadSkin, Modal, Seg, Select, SkinHead } from "../components/ui";
 
 type Pick = { key: string; libId?: string; defaultId?: string; name: string; data: string; slim: boolean; source: string };
@@ -134,9 +132,7 @@ export function Skins({ initialAccount }: { initialAccount?: string }) {
   const [busy, setBusy] = useState(false);
   const [nickOpen, setNickOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
-  // Скін зберігає сервер: Mojang для Microsoft, ЛІЯ — для офлайн-ніка з ЛІЯ ID (видно гравцям ЛІЇ).
-  const lia = useLia((s) => !!s.session);
-  const ms = account?.kind === "microsoft" || lia;
+  const ms = account?.kind === "microsoft";
 
   const reload = useCallback(async () => {
     try {
@@ -302,9 +298,6 @@ export function Skins({ initialAccount }: { initialAccount?: string }) {
               {t("acc.login_ms")}
             </button>
           </Empty>
-        </div>
-        <div style={{ marginTop: 14 }}>
-          <LiaIdCard />
         </div>
       </div>
     );

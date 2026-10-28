@@ -1,14 +1,16 @@
 //! Сервер ЛІЇ: ЛІЯ ID (сумісний з Yggdrasil для authlib-injector), скіни, друзі, статуси,
 //! опубліковані збірки і ретранслятор LAN-світів.
+mod account;
 mod api;
 mod db;
+mod mail;
 mod relay;
 mod ygg;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -47,6 +49,7 @@ pub struct App {
 pub type S = axum::extract::State<Arc<App>>;
 
 /// Помилка у форматі Yggdrasil — його ж читає й лаунчер.
+#[derive(Debug)]
 pub struct ApiErr(pub StatusCode, pub &'static str, pub String);
 
 impl IntoResponse for ApiErr {
@@ -94,10 +97,6 @@ impl App {
         }
         Ok(())
     }
-
-    pub fn texture_url(&self, hash: &str) -> String {
-        format!("{}/textures/{hash}", self.cfg.public_url)
-    }
 }
 
 fn env(k: &str, d: &str) -> String {
@@ -112,7 +111,6 @@ async fn main() {
         relay_port: env("LIA_RELAY_PORT", "25570").parse().expect("LIA_RELAY_PORT"),
         data: PathBuf::from(env("LIA_DATA", "data")),
     };
-    std::fs::create_dir_all(cfg.data.join("textures")).expect("тека даних");
     std::fs::create_dir_all(cfg.data.join("packs")).expect("тека даних");
     let (key, public_pem) = ygg::load_key(&cfg.data.join("signing.pem"));
     let conn = db::open(&cfg.data.join("lia.db"));
@@ -159,27 +157,34 @@ async fn main() {
         .nest("/yggdrasil", ygg)
         // authlib-injector звертається до кореня API і з косою рискою в кінці, і без неї.
         .route("/yggdrasil/", get(ygg::meta))
-        .route("/textures/{hash}", get(api::texture))
-        .route("/api/register", post(api::register))
-        .route("/api/login", post(ygg::login))
+        .route("/api/register", post(account::register))
+        .route("/api/login", post(account::login))
+        .route("/api/logout", post(account::logout))
+        .route("/api/email/verify", post(account::verify_email))
+        .route("/api/email/resend", post(account::resend_code))
+        .route("/api/email/change", post(account::change_email))
+        .route("/api/password/forgot", post(account::forgot))
+        .route("/api/password/reset", post(account::reset))
+        .route("/api/sessions", get(account::sessions))
+        .route("/api/sessions/others", delete(account::revoke_others))
+        .route("/api/sessions/{id}", delete(account::revoke_session))
         .route("/api/game/challenge", post(ygg::game_challenge))
         .route("/api/game/session", post(ygg::game_session))
-        .route("/api/me", get(api::me))
-        .route("/api/me/password", post(api::change_password))
-        .route("/api/me/skin", put(api::set_skin).delete(api::clear_skin))
+        .route("/api/me", get(account::me).delete(account::delete_account))
+        .route("/api/me/password", post(account::change_password))
         .route("/api/users", get(api::search_users))
         .route("/api/users/{name}", get(api::user))
         .route("/api/friends", get(api::friends))
         .route("/api/friends/{name}", post(api::friend_add).delete(api::friend_remove))
-        .route("/api/packs", get(api::packs).post(api::pack_publish))
+        // Великі тіла — лише для завантаження збірок; решта запитів — з типовим лімітом axum (2 МБ).
+        .route("/api/packs", get(api::packs).post(api::pack_publish).layer(DefaultBodyLimit::max(api::PACK_MAX)))
         .route("/api/packs/subscribed", get(api::packs_subscribed))
-        .route("/api/packs/{id}", put(api::pack_update).delete(api::pack_delete).get(api::pack_get))
+        .route("/api/packs/{id}", put(api::pack_update).layer(DefaultBodyLimit::max(api::PACK_MAX)).delete(api::pack_delete).get(api::pack_get))
         .route("/api/packs/{id}/file", get(api::pack_file))
         .route("/api/packs/{id}/subscribe", post(api::pack_subscribe).delete(api::pack_unsubscribe))
         .route("/api/feed", get(api::feed))
         .route("/api/ws", get(api::ws))
         .route("/health", get(|| async { "ok" }))
-        .layer(DefaultBodyLimit::max(api::PACK_MAX))
         .with_state(app);
 
     let listener = tokio::net::TcpListener::bind(&http).await.expect("HTTP-порт");

@@ -445,6 +445,12 @@ pub async fn launch_instance(state: Arc<AppState>, id: String, server: Option<(S
         };
         task.stage("launch", 0, "");
         let game_dir = ctx.paths.game_dir(&id);
+        // На першому запуску гра показує вітання «Доступність», і швидкий вхід у світ чи на сервер
+        // чекає, поки його закриють. Для нової збірки позначаємо вітання пройденим.
+        if (server.is_some() || world.is_some()) && !game_dir.join("options.txt").exists() {
+            std::fs::create_dir_all(&game_dir)?;
+            std::fs::write(game_dir.join("options.txt"), "onboardAccessibility:false\n")?;
+        }
         let natives_dir = ctx.paths.natives_root().join(format!("{id}-{}", util::now_ms()));
         install::extract_natives(&prep.natives, &natives_dir)?;
         if let Some(install::LegacyAssets::Resources(pairs)) = &prep.legacy_assets {
@@ -472,7 +478,8 @@ pub async fn launch_instance(state: Arc<AppState>, id: String, server: Option<(S
                     auth.token = token;
                     auth.uuid = uuid;
                     auth.name = name;
-                    auth.user_type = if ms.is_some() { "msa" } else { "mojang" };
+                    // Токен тепер від ЛІЇ: для authlib-injector тип завжди «mojang», інакше гра піде з ним до Microsoft.
+                    auth.user_type = "mojang";
                     via_lia = true;
                 }
                 Err(e) if friends => return Err(e),
@@ -952,15 +959,6 @@ async fn ms_token(state: &AppState, id: &str) -> Result<String> {
 pub async fn account_skin(state: S<'_>, id: String) -> Result<Value> {
     let acc = state.accounts.lock().await.iter().find(|a| a.id == id).cloned().ok_or_else(|| err("no_account", "акаунт не знайдено"))?;
     let http = &state.http;
-    // Офлайн-нік з ЛІЯ ID: у світах ЛІЇ його бачать зі скіном ЛІЯ ID.
-    if acc.kind == "offline" && crate::lia::session().is_some() {
-        if let Ok(me) = lia_call(&state, reqwest::Method::GET, "/api/me", None).await {
-            if let Some(u) = me["skin"].as_str() {
-                let skin = skins::png_url(&crate::net::get_bytes(http, u).await?);
-                return Ok(json!({ "skin": skin, "url": u, "slim": me["slim"], "capes": [], "source": "lia" }));
-            }
-        }
-    }
     if acc.kind == "microsoft" {
         let token = ms_token(&state, &id).await?;
         let p = accounts::profile(http, &token).await?;
@@ -1087,13 +1085,6 @@ pub async fn skin_apply(state: S<'_>, account_id: String, skin_id: String, slim:
     } else {
         skinlib::bytes_of(&skin_id)?
     };
-    let kind = state.accounts.lock().await.iter().find(|a| a.id == account_id).map(|a| a.kind.clone());
-    if kind.as_deref() == Some("offline") {
-        let token = lia_token()?;
-        let resp = state.http.put(format!("{}/api/me/skin", crate::lia::api())).query(&[("slim", slim.to_string())]).bearer_auth(token).body(bytes).send().await?;
-        let me = crate::lia::parse(resp).await?;
-        return skinlib::set_applied(&account_id, &skin_id, me["skin"].as_str().unwrap_or(""));
-    }
     let token = ms_token(&state, &account_id).await?;
     let profile = accounts::upload_skin(&state.http, &token, bytes, slim).await?;
     if let Some(active) = profile.skins.iter().find(|s| s.state == "ACTIVE") {
@@ -1142,8 +1133,8 @@ pub async fn news_list(state: S<'_>) -> Result<Vec<news::Entry>> {
 
 /// Вхід (або реєстрація) у ЛІЯ ID — акаунт лаунчера, окремо від ігрових акаунтів.
 #[tauri::command]
-pub async fn lia_login(state: S<'_>, name: String, password: String, register: bool) -> Result<Value> {
-    let s = crate::lia::login(&state.http, &name, &password, register).await?;
+pub async fn lia_login(state: S<'_>, name: String, password: String, email: Option<String>) -> Result<Value> {
+    let s = crate::lia::login(&state.http, &name, &password, email.as_deref()).await?;
     crate::lia::set_session(Some(&s))?;
     state.app.emit("lia-session", ()).ok();
     Ok(json!({ "name": s.name }))
@@ -1153,7 +1144,7 @@ pub async fn lia_login(state: S<'_>, name: String, password: String, register: b
 pub async fn lia_logout(state: S<'_>) -> Result<()> {
     if let Some(s) = crate::lia::session() {
         // Відкликати токен на сервері — не обов'язково, якщо мережі немає.
-        let _ = crate::lia::call(&state.http, reqwest::Method::POST, "/yggdrasil/authserver/invalidate", None, Some(json!({ "accessToken": s.token }))).await;
+        let _ = crate::lia::call(&state.http, reqwest::Method::POST, "/api/logout", Some(&s.token), None).await;
     }
     crate::lia::set_session(None)?;
     state.app.emit("lia-session", ()).ok();
@@ -1196,7 +1187,23 @@ pub async fn lia_request(state: S<'_>, method: String, path: String, body: Optio
         "DELETE" => reqwest::Method::DELETE,
         _ => return Err(err("invalid", "метод")),
     };
-    lia_call(&state, m, &path, body).await
+    let delete_me = m == reqwest::Method::DELETE && path == "/api/me";
+    let r = lia_call(&state, m, &path, body).await?;
+    // Акаунт видалено — на цьому ПК більше нема куди входити.
+    if delete_me {
+        crate::lia::set_session(None)?;
+        state.app.emit("lia-session", ()).ok();
+    }
+    Ok(r)
+}
+
+/// Запити без входу: відновлення пароля.
+#[tauri::command]
+pub async fn lia_public(state: S<'_>, path: String, body: Value) -> Result<Value> {
+    if !matches!(path.as_str(), "/api/password/forgot" | "/api/password/reset") {
+        return Err(err("invalid", "недозволений шлях"));
+    }
+    crate::lia::call(&state.http, reqwest::Method::POST, &path, None, Some(body)).await
 }
 
 fn valid_pack_id(id: &str) -> Result<()> {
@@ -1279,13 +1286,13 @@ pub async fn lia_update_pack(state: S<'_>, instance_id: String) -> Result<Instan
     }
     let (meta, tmp) = lia_download_pack(&state, &ctx, &pack).await?;
     let task = ctx.task_for(inst.name.clone(), &inst.id);
+    // Старі моди — у запасну теку: якщо оновлення обірветься, збірка не лишиться без модів.
+    let mods = ctx.paths.game_dir(&inst.id).join("mods");
+    let backup = ctx.paths.game_dir(&inst.id).join(format!("mods.lia-backup-{}", util::now_ms()));
+    if mods.exists() {
+        std::fs::rename(&mods, &backup)?;
+    }
     let r: Result<()> = async {
-        let mods = ctx.paths.game_dir(&inst.id).join("mods");
-        for e in std::fs::read_dir(&mods).into_iter().flatten().flatten() {
-            if e.path().is_file() {
-                std::fs::remove_file(e.path())?;
-            }
-        }
         modrinth::apply_mrpack(&ctx, &tmp, &mut inst, &task).await?;
         if let Some(m) = inst.modpack.as_mut() {
             m.version_id = meta["version"].to_string();
@@ -1294,6 +1301,12 @@ pub async fn lia_update_pack(state: S<'_>, instance_id: String) -> Result<Instan
         instances::save(&ctx.paths, &inst)
     }
     .await;
+    if r.is_ok() {
+        let _ = std::fs::remove_dir_all(&backup);
+    } else if backup.exists() {
+        let _ = std::fs::remove_dir_all(&mods);
+        let _ = std::fs::rename(&backup, &mods);
+    }
     let _ = std::fs::remove_file(&tmp);
     task.finish(&r);
     state.app.emit("instances-changed", ()).ok();
@@ -1310,7 +1323,8 @@ pub async fn lia_share_world(state: S<'_>, instance_id: String, port: u16) -> Re
         app.emit("lia-share-ended", json!({ "instanceId": id })).ok();
     })
     .await?;
-    Ok(json!({ "code": code, "address": address }))
+    // Без входу через ЛІЮ світ перевіряє гостей через Mojang — піратам туди не зайти.
+    Ok(json!({ "code": code, "address": address, "licensedOnly": !crate::lia::is_lia_game(&instance_id) }))
 }
 
 #[tauri::command]

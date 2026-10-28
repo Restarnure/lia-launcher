@@ -2,7 +2,7 @@
 //! офлайн-ніком чи ліцензійним профілем, який належить акаунту ЛІЯ ID. Ліцензійних гравців без ЛІЇ
 //! перевіряємо через Mojang, тож у світ гравця ЛІЇ заходять усі.
 //! Специфікація: https://github.com/yushijinhun/authlib-injector/wiki/Yggdrasil-服务端技术规范
-use crate::api::{self, User};
+use crate::api;
 use crate::{bad, forbidden, internal, App, ApiErr, R, S};
 use axum::extract::{Path, Query};
 use axum::http::{HeaderMap, StatusCode};
@@ -93,15 +93,10 @@ pub fn token_profile(app: &App, token: &str) -> Option<Profile> {
     db.query_row(&format!("SELECT {PROFILE_COLS} FROM profiles WHERE id = ?1"), [pid], row_profile).ok()
 }
 
-/// Текстури профілю: свій скін з ЛІЯ ID, інакше скін ліцензії з Mojang.
-fn textures(app: &App, p: &Profile) -> Value {
-    let owner = api::user_by_id(app, p.user);
-    let skin = match owner.as_ref().and_then(|u| u.skin.as_ref().map(|s| (app.texture_url(s), u.slim))) {
-        Some(s) => Some(s),
-        None => p.mojang_skin.clone(),
-    };
+/// Текстури профілю: у ліцензії — скін з Mojang; офлайн-нік — стандартний.
+fn textures(p: &Profile) -> Value {
     let mut t = json!({});
-    if let Some((url, slim)) = skin {
+    if let Some((url, slim)) = p.mojang_skin.clone() {
         t["SKIN"] = json!({ "url": url });
         if slim {
             t["SKIN"]["metadata"] = json!({ "model": "slim" });
@@ -111,7 +106,7 @@ fn textures(app: &App, p: &Profile) -> Value {
 }
 
 fn profile_json(app: &App, p: &Profile, signed: bool) -> Value {
-    let value = B64.encode(json!({ "timestamp": crate::now(), "profileId": undashed(&p.uuid), "profileName": p.name, "textures": textures(app, p) }).to_string());
+    let value = B64.encode(json!({ "timestamp": crate::now(), "profileId": undashed(&p.uuid), "profileName": p.name, "textures": textures(p) }).to_string());
     let mut prop = json!({ "name": "textures", "value": value });
     if signed {
         prop["signature"] = json!(sign(app, prop["value"].as_str().unwrap()));
@@ -180,6 +175,11 @@ pub async fn game_session(st: S, h: HeaderMap, Json(r): Json<SessionReq>) -> R<J
                 Some(_) => return Err(ApiErr(StatusCode::CONFLICT, "NickTaken", "цей нік уже використовує інший гравець ЛІЇ".into())),
                 None => {
                     st.limit(format!("nick:{}", user.id), 20, std::time::Duration::from_secs(3600))?;
+                    // Не більше 10 ніків на акаунт — щоб не можна було скупити чужі ніки.
+                    let owned: i64 = st.db.lock().unwrap().query_row("SELECT count(*) FROM profiles WHERE user = ?1 AND kind = 'offline'", [user.id], |r| r.get(0)).map_err(internal)?;
+                    if owned >= 10 {
+                        return Err(bad("на одному ЛІЯ ID може бути не більше 10 ніків"));
+                    }
                     let uuid = offline_uuid(&r.name);
                     st.db
                         .lock()
@@ -295,7 +295,7 @@ pub async fn join(st: S, Json(r): Json<JoinReq>) -> R<StatusCode> {
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn has_joined(st: S, Query(q): Query<HashMap<String, String>>) -> Response {
+pub async fn has_joined(st: S, h: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
     let (Some(name), Some(server)) = (q.get("username"), q.get("serverId")) else {
         return StatusCode::NO_CONTENT.into_response();
     };
@@ -308,7 +308,10 @@ pub async fn has_joined(st: S, Query(q): Query<HashMap<String, String>>) -> Resp
         }
         return StatusCode::NO_CONTENT.into_response();
     }
-    // Не наш гравець — може, ліцензія без ЛІЇ: питаємо Mojang.
+    // Не наш гравець — може, ліцензія без ЛІЇ: питаємо Mojang (з лімітом, щоб нами не засипали Mojang).
+    if st.limit(format!("mojang:{}", crate::client_ip(&h)), 120, std::time::Duration::from_secs(60)).is_err() {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
     let mut url = format!("{MOJANG_SESSION}/hasJoined?username={}&serverId={}", urlenc(name), urlenc(server));
     if let Some(ip) = q.get("ip") {
         url += &format!("&ip={}", urlenc(ip));
@@ -323,7 +326,7 @@ fn urlenc(s: &str) -> String {
     s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
 }
 
-pub async fn profile(st: S, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {
+pub async fn profile(st: S, h: HeaderMap, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {
     let Some(uuid) = dashed(&id) else {
         return StatusCode::NO_CONTENT.into_response();
     };
@@ -332,6 +335,9 @@ pub async fn profile(st: S, Path(id): Path<String>, Query(q): Query<HashMap<Stri
         return Json(profile_json(&st, &p, signed)).into_response();
     }
     // Скін ліцензійного гравця без ЛІЇ — з Mojang.
+    if st.limit(format!("mojang:{}", crate::client_ip(&h)), 120, std::time::Duration::from_secs(60)).is_err() {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
     match mojang_get(&st, &format!("{MOJANG_SESSION}/profile/{}", undashed(&uuid))).await {
         Some(v) => Json(resign_mojang(&st, v, signed)).into_response(),
         None => StatusCode::NO_CONTENT.into_response(),
@@ -341,29 +347,6 @@ pub async fn profile(st: S, Path(id): Path<String>, Query(q): Query<HashMap<Stri
 pub async fn profiles_by_names(st: S, Json(names): Json<Vec<String>>) -> Json<Value> {
     let out: Vec<Value> = names.iter().take(10).filter_map(|n| profile_by(&st, "name", n)).map(|p| json!({ "id": undashed(&p.uuid), "name": p.name })).collect();
     Json(json!(out))
-}
-
-/// Вхід у ЛІЯ ID з лаунчера: токен акаунта (не гри).
-#[derive(Deserialize)]
-pub struct LoginReq {
-    name: String,
-    password: String,
-}
-
-pub async fn login(st: S, headers: HeaderMap, Json(r): Json<LoginReq>) -> R<Json<Value>> {
-    st.limit(format!("auth:{}", crate::client_ip(&headers)), 20, std::time::Duration::from_secs(600))?;
-    let u = api::check_password(&st, &r.name, &r.password)?;
-    Ok(Json(account_session(&st, &u)?))
-}
-
-pub fn account_session(app: &App, u: &User) -> R<Value> {
-    let token = hex(&rand::random::<[u8; 32]>());
-    app.db
-        .lock()
-        .unwrap()
-        .execute("INSERT INTO tokens (hash, user, client, created) VALUES (?1, ?2, '', ?3)", params![api::token_hash(&token), u.id, crate::now()])
-        .map_err(internal)?;
-    Ok(json!({ "accessToken": token, "name": u.name }))
 }
 
 /// Ігрові профілі акаунта (для сторінки ЛІЯ ID).

@@ -6,7 +6,6 @@ import { t } from "../lib/i18n";
 import { fail, navigate, refreshAccounts, setState, useStore } from "../lib/store";
 import { confirmDialog, Empty, loadSkin, SkinHead, Switch } from "../components/ui";
 import { LiaIdCard } from "../components/LiaId";
-import { useLia } from "../lib/lia";
 
 export function Accounts() {
   const { accounts, selected } = useStore((s) => s.accounts);
@@ -133,9 +132,7 @@ function SkinPanel({ account }: { account: Account }) {
     v.animation = anim;
   }, [walk]);
 
-  const lia = useLia((s) => !!s.session);
-  // Скін ставиться на акаунт Microsoft, а офлайн-ніку — через ЛІЯ ID (його бачать гравці ЛІЇ).
-  const ms = account.kind === "microsoft" || lia;
+  const ms = account.kind === "microsoft";
 
   return (
     <div className="skin-panel card">

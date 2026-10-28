@@ -18,7 +18,7 @@ function published(): Record<string, string> {
 
 /** Опублікувати збірку друзям або випустити нову версію вже опублікованої. */
 export function PublishButton({ inst }: { inst: Instance }) {
-  const session = useLia((s) => s.session);
+  const session = useLia((s) => (s.me?.emailVerified ? s.session : null));
   const [open, setOpen] = useState(false);
   // Збірку, встановлену від друга, публікує її автор, а не ми.
   if (!session || inst.modpack?.projectId.startsWith("lia:")) return null;

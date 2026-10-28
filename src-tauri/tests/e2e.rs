@@ -65,7 +65,7 @@ async fn run_with(spec: &str, ctx: &Ctx, logs: Arc<Mutex<Vec<String>>>) -> Resul
     }
     // LIA_E2E_LIA=1 — гра з ЛІЯ ID: authlib-injector, свій http.agent і токен тестового акаунта.
     let (jvm_args, auth) = if std::env::var("LIA_E2E_LIA").is_ok() {
-        let s = lia_lib::lia::login(&ctx.http, "LiaTestHost", "test-password-1", false).await.map_err(|e| format!("ЛІЯ ID: {e}"))?;
+        let s = lia_lib::lia::login(&ctx.http, "LiaTestHost", "test-password-1", None).await.map_err(|e| format!("ЛІЯ ID: {e}"))?;
         let nick = lia_lib::accounts::offline("LiaTestNick").map_err(|e| e.to_string())?;
         let (token, uuid, name) = lia_lib::lia::game_session(&ctx.http, &s, &nick).await.map_err(|e| format!("сесія гри: {e}"))?;
         let jar = lia_lib::lia::injector(&ctx).await.map_err(|e| format!("injector: {e}"))?;
@@ -80,7 +80,8 @@ async fn run_with(spec: &str, ctx: &Ctx, logs: Arc<Mutex<Vec<String>>>) -> Resul
         jvm_args,
         resolution: (854, 480),
         fullscreen: false,
-        server: None,
+        // LIA_E2E_JOIN=host:port — одразу зайти на сервер (швидкий вхід, 1.20+).
+        server: std::env::var("LIA_E2E_JOIN").ok().and_then(|a| a.rsplit_once(':').map(|(h, p)| (h.to_string(), p.parse().unwrap_or(25565)))),
         world: None,
         auth,
     };
@@ -99,8 +100,9 @@ async fn run_with(spec: &str, ctx: &Ctx, logs: Arc<Mutex<Vec<String>>>) -> Resul
             return Err(format!("гра завершилась з кодом {code:?}\n{tail}"));
         }
         if logs.lock().unwrap().iter().any(|l| READY.iter().any(|m| l.contains(m))) {
-            // Маркер — ще не меню: гра має прожити далі без падіння.
-            tokio::time::sleep(Duration::from_secs(8)).await;
+            // Маркер — ще не меню: гра має прожити далі без падіння. Із входом на сервер — довше, щоб устигла зайти.
+            let wait = if std::env::var("LIA_E2E_JOIN").is_ok() { 40 } else { 8 };
+            tokio::time::sleep(Duration::from_secs(wait)).await;
             if let Ok(code) = rx.try_recv() {
                 let tail = logs.lock().unwrap().iter().rev().take(40).rev().cloned().collect::<Vec<_>>().join("\n");
                 return Err(format!("гра впала після старту, код {code:?}\n{tail}"));

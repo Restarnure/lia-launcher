@@ -249,7 +249,7 @@ function FeedItem({ e }: { e: LiaEvent }) {
 }
 
 export function Friends() {
-  const session = useLia((s) => s.session);
+  const session = useLia((s) => (s.me?.emailVerified ? s.session : null));
   const online = useLia((s) => s.online);
   const friends = useLia((s) => s.friends);
   const rev = useLia((s) => s.rev);

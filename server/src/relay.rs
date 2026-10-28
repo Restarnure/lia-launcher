@@ -19,8 +19,8 @@ struct Host {
 #[derive(Default)]
 pub struct Hub {
     hosts: Mutex<HashMap<String, Host>>,
-    /// Гравці, що чекають на з'єднання даних від хоста: id → (сокет, уже прочитані байти).
-    pending: Mutex<HashMap<String, (TcpStream, Vec<u8>)>>,
+    /// Гравці, що чекають на з'єднання даних від хоста: id → (сокет, уже прочитані байти, код світу).
+    pending: Mutex<HashMap<String, (TcpStream, Vec<u8>, String)>>,
 }
 
 impl Hub {
@@ -134,9 +134,9 @@ async fn player(app: &Arc<App>, mut s: TcpStream, first: u8) -> std::io::Result<
         return Ok(None);
     }
     read_var(&pkt, &mut p);
-    let Some(hl) = read_var(&pkt, &mut p) else { return Ok(None) };
-    let Some(host) = pkt.get(p..p + hl as usize).and_then(|b| std::str::from_utf8(b).ok()) else { return Ok(None) };
-    p += hl as usize + 2;
+    let Some(hl) = read_var(&pkt, &mut p).and_then(|l| usize::try_from(l).ok()).filter(|l| *l <= 255) else { return Ok(None) };
+    let Some(host) = pkt.get(p..p + hl).and_then(|b| std::str::from_utf8(b).ok()) else { return Ok(None) };
+    p += hl + 2;
     let next = read_var(&pkt, &mut p).unwrap_or(0);
     let code = code_from_host(host, &app.cfg.play_domain);
     let tx = code.as_ref().and_then(|c| app.relay.hosts.lock().unwrap().get(c).map(|h| h.tx.clone()));
@@ -154,8 +154,17 @@ async fn player(app: &Arc<App>, mut s: TcpStream, first: u8) -> std::io::Result<
         }
         return Ok(None);
     };
+    let code = code.unwrap_or_default();
     let id = crate::ygg::hex(&rand::random::<[u8; 12]>());
-    app.relay.pending.lock().unwrap().insert(id.clone(), (s, raw));
+    {
+        let mut pending = app.relay.pending.lock().unwrap();
+        // Не більше 20 гравців, що одночасно заходять в один світ: інакше потоком з'єднань
+        // можна змусити лаунчер хоста відкривати безліч з'єднань до його гри.
+        if pending.values().filter(|p| p.2 == code).count() >= 20 {
+            return Ok(None);
+        }
+        pending.insert(id.clone(), (s, raw, code));
+    }
     if tx.send(json!({ "open": id }).to_string()).is_err() {
         app.relay.pending.lock().unwrap().remove(&id);
         return Ok(None);
@@ -168,7 +177,7 @@ async fn player(app: &Arc<App>, mut s: TcpStream, first: u8) -> std::io::Result<
 }
 
 fn data(app: Arc<App>, mut host: TcpStream, id: &str) -> Option<Cont> {
-    let (mut player, raw) = app.relay.pending.lock().unwrap().remove(id)?;
+    let (mut player, raw, _) = app.relay.pending.lock().unwrap().remove(id)?;
     Some(Box::pin(async move {
         if host.write_all(&raw).await.is_ok() {
             let _ = tokio::io::copy_bidirectional(&mut player, &mut host).await;
@@ -177,7 +186,7 @@ fn data(app: Arc<App>, mut host: TcpStream, id: &str) -> Option<Cont> {
 }
 
 fn host(app: Arc<App>, s: TcpStream, token: &str) -> Option<Cont> {
-    let user = api::token_user(&app, token)?;
+    let user = api::token_user(&app, token).filter(|u| u.verified)?;
     // ponytail: без ліміту гравців на світ; додати, якщо хтось почне роздавати світ на сотні людей.
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     let code = {

@@ -5,6 +5,10 @@ services:
     build: ./server
     container_name: lia-server
     restart: unless-stopped
+    # RESEND_API_KEY=… для листів ЛІЯ ID (без файлу пошта вимкнена).
+    env_file:
+      - path: ./lia.env
+        required: false
     environment:
       LIA_PUBLIC_URL: https://lia.starnure.dev
       LIA_PLAY_DOMAIN: play.lia.starnure.dev

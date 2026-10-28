@@ -118,6 +118,7 @@ pub fn run() {
             app::skin_export,
             app::lia_login,
             app::lia_logout,
+            app::lia_public,
             app::lia_session,
             app::lia_request,
             app::lia_publish,

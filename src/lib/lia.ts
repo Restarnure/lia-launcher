@@ -2,12 +2,14 @@
 // автоматичне відкриття LAN-світу друзям через ретранслятор.
 import { useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api, type GameEvent, type LiaFriends, type LiaPresence, type LiaSession, type LogLine } from "./api";
+import { api, type GameEvent, type LiaFriends, type LiaMe, type LiaPresence, type LiaSession, type LogLine } from "./api";
 import { t } from "./i18n";
 import { fail, getState, refreshInstances, toast } from "./store";
 
 interface LiaState {
   session: LiaSession | null;
+  /** Акаунт: пошта, чи підтверджена. Соцмережа працює лише з підтвердженою поштою. */
+  me: LiaMe | null;
   online: boolean;
   friends: LiaFriends | null;
   /** Відкриті друзям світи: збірка → адреса. */
@@ -16,7 +18,7 @@ interface LiaState {
   rev: number;
 }
 
-let st: LiaState = { session: null, online: false, friends: null, shares: {}, rev: 0 };
+let st: LiaState = { session: null, me: null, online: false, friends: null, shares: {}, rev: 0 };
 const subs = new Set<() => void>();
 const set = (p: Partial<LiaState>) => {
   st = { ...st, ...p };
@@ -38,12 +40,15 @@ export const liaState = () => st;
 let ws: WebSocket | null = null;
 let retry: ReturnType<typeof setTimeout> | null = null;
 
+/** Соцмережа відкрита: увійшли й підтвердили пошту. */
+const ready = () => !!st.session && !!st.me?.emailVerified;
+
 export async function loadFriends() {
-  if (!st.session) return;
+  if (!ready()) return;
   try {
     set({ friends: await api.lia<LiaFriends>("GET", "/api/friends") });
-  } catch (e) {
-    fail(e);
+  } catch {
+    // Немає мережі — список друзів підтягнеться при наступному підключенні.
   }
 }
 
@@ -71,7 +76,7 @@ function connect() {
   ws?.close();
   ws = null;
   const s = st.session;
-  if (!s) return set({ online: false });
+  if (!s || !ready()) return set({ online: false });
   const sock = new WebSocket(`${s.api.replace(/^http/, "ws")}/api/ws?token=${encodeURIComponent(s.token)}`);
   ws = sock;
   sock.onopen = () => {
@@ -97,24 +102,30 @@ function connect() {
   sock.onclose = () => {
     if (ws !== sock) return;
     set({ online: false });
-    // Сервер перезапустився або зник інтернет — пробуємо знову.
-    retry = setTimeout(connect, 8000);
+    // Сервер перезапустився або зник інтернет — пробуємо знову. Перед цим перевіряємо акаунт:
+    // якщо сесію відкликано (вихід з усіх пристроїв, новий пароль), ядро її прибере.
+    retry = setTimeout(() => refreshLia(true), 8000);
   };
 }
 
-export async function refreshLia() {
-  try {
-    const session = await api.liaSession();
-    const changed = session?.token !== st.session?.token;
-    set({ session, ...(session ? {} : { friends: null }) });
-    if (changed) {
-      connect();
-      loadFriends();
+/** Сесія й акаунт ЛІЯ ID. `reconnect` — заново підключити статуси навіть без змін. */
+export async function refreshLia(reconnect = false) {
+  const session = await api.liaSession().catch(() => null);
+  let me: LiaMe | null = null;
+  if (session) {
+    try {
+      me = await api.lia<LiaMe>("GET", "/api/me");
+    } catch {
+      // Немає мережі (сесію лишаємо — спробуємо пізніше) або сесію відкликано (ядро її вже прибрало).
+      me = st.me;
     }
-  } catch {
-    // Немає мережі або токен відкликано — соцмережа просто недоступна.
-    set({ session: null, friends: null });
+  }
+  const fresh = await api.liaSession().catch(() => null);
+  const changed = fresh?.token !== st.session?.token || !!me?.emailVerified !== !!st.me?.emailVerified;
+  set({ session: fresh, me: fresh ? me : null, ...(fresh ? {} : { friends: null }) });
+  if (changed || reconnect) {
     connect();
+    loadFriends();
   }
 }
 
@@ -122,7 +133,7 @@ export async function refreshLia() {
 const LAN = /Started (?:serving )?on (\d{2,5})\b/;
 
 async function shareWorld(instanceId: string, port: number) {
-  if (!st.session) return;
+  if (!ready()) return;
   try {
     const r = await api.liaShareWorld(instanceId, port);
     set({ shares: { ...st.shares, [instanceId]: r } });
@@ -145,6 +156,9 @@ function unshare(instanceId: string) {
 export async function initLia() {
   await listen<{ instanceId: string; lines: LogLine[] }>("game-log", ({ payload }) => {
     for (const l of payload.lines) {
+      // Лише рядки вбудованого сервера гри — моди теж люблять писати «Started on …».
+      // Без XML-лога (старі версії) потік видно лише в самому тексті: «[Server thread/INFO]».
+      if (!(l.thread || l.text).includes("Server thread")) continue;
       const m = LAN.exec(l.text);
       if (m) shareWorld(payload.instanceId, Number(m[1]));
       else if (l.text.includes("Stopping server")) unshare(payload.instanceId);

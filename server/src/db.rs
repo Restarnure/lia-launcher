@@ -68,6 +68,33 @@ pub fn open(path: &Path) -> Connection {
          );",
     )
     .expect("схема бази");
+    // 1.1.2: пошта, захист від підбору, пристрої, коди з пошти.
+    let cols = |t: &str| -> Vec<String> { c.prepare(&format!("SELECT name FROM pragma_table_info('{t}')")).unwrap().query_map([], |r| r.get(0)).unwrap().flatten().collect() };
+    let users = cols("users");
+    for (col, def) in [("email", "TEXT"), ("email_verified", "INTEGER NOT NULL DEFAULT 0"), ("failed", "INTEGER NOT NULL DEFAULT 0"), ("locked_until", "INTEGER NOT NULL DEFAULT 0")] {
+        if !users.iter().any(|u| u == col) {
+            c.execute_batch(&format!("ALTER TABLE users ADD COLUMN {col} {def};")).expect("міграція users");
+        }
+    }
+    let tokens = cols("tokens");
+    for (col, def) in [("device", "TEXT"), ("ip", "TEXT"), ("last_used", "INTEGER")] {
+        if !tokens.iter().any(|u| u == col) {
+            c.execute_batch(&format!("ALTER TABLE tokens ADD COLUMN {col} {def};")).expect("міграція tokens");
+        }
+    }
+    c.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email) WHERE email IS NOT NULL;
+         CREATE TABLE IF NOT EXISTS codes (
+            user INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            purpose TEXT NOT NULL,
+            hash TEXT NOT NULL,
+            email TEXT NOT NULL,
+            expires INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user, purpose)
+         );",
+    )
+    .expect("схема 1.1.2");
     // 1.1.1: токени гри прив'язані до ігрового профілю; токени акаунта — без нього.
     let has_profile: bool = c.prepare("SELECT 1 FROM pragma_table_info('tokens') WHERE name = 'profile'").unwrap().exists([]).unwrap();
     if !has_profile {

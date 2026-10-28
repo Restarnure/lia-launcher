@@ -105,9 +105,14 @@ pub async fn parse(resp: reqwest::Response) -> Result<Value> {
 }
 
 /// Вхід або реєстрація ЛІЯ ID. Зберігає сесію викликач (`set_session`).
-pub async fn login(http: &reqwest::Client, name: &str, password: &str, register: bool) -> Result<Session> {
-    let path = if register { "/api/register" } else { "/api/login" };
-    let v = call(http, reqwest::Method::POST, path, None, Some(json!({ "name": name.trim(), "password": password }))).await?;
+/// `email` — лише для реєстрації. Сервер бачить назву ПК (для списку пристроїв і листа про новий вхід).
+pub async fn login(http: &reqwest::Client, name: &str, password: &str, email: Option<&str>) -> Result<Session> {
+    let device = std::env::var("COMPUTERNAME").map(|c| format!("ЛІЯ · {c}")).unwrap_or_else(|_| "ЛІЯ".into());
+    let (path, body) = match email {
+        Some(e) => ("/api/register", json!({ "name": name.trim(), "email": e.trim(), "password": password, "device": device })),
+        None => ("/api/login", json!({ "name": name.trim(), "password": password, "device": device })),
+    };
+    let v = call(http, reqwest::Method::POST, path, None, Some(body)).await?;
     Ok(Session { name: v["name"].as_str().unwrap_or(name).to_string(), token: v["accessToken"].as_str().unwrap_or("").to_string() })
 }
 
@@ -261,19 +266,47 @@ fn loader_dep(inst: &Instance) -> Result<Option<(&'static str, String)>> {
         "neoforge" => "neoforge",
         _ => return Ok(None),
     };
-    let v = inst.loader_version.clone().ok_or_else(|| err("lia", "спершу запустіть збірку один раз — тоді відома версія модлоадера"))?;
+    // «Остання» версія модлоадера не записується в збірку — беремо її з профілю запуску.
+    let v = inst
+        .loader_version
+        .clone()
+        .or_else(|| inst.version_id.as_deref().and_then(|id| loader_version_of(&inst.loader, &inst.mc_version, id)))
+        .ok_or_else(|| err("lia", "спершу запустіть збірку один раз — тоді відома версія модлоадера"))?;
     // У .mrpack Forge вказують без префікса версії гри.
     let v = v.strip_prefix(&format!("{}-", inst.mc_version)).map(str::to_string).unwrap_or(v);
     Ok(Some((key, v)))
 }
 
+/// Версія модлоадера з id профілю запуску: fabric-loader-0.16.10-1.21.4, quilt-loader-…,
+/// 1.20.1-forge-47.2.0, neoforge-21.1.77.
+fn loader_version_of(loader: &str, mc: &str, id: &str) -> Option<String> {
+    let v = match loader {
+        "fabric" => id.strip_prefix("fabric-loader-")?.strip_suffix(&format!("-{mc}"))?,
+        "quilt" => id.strip_prefix("quilt-loader-")?.strip_suffix(&format!("-{mc}"))?,
+        "forge" => id.strip_prefix(&format!("{mc}-forge-"))?,
+        "neoforge" => id.strip_prefix("neoforge-")?,
+        _ => return None,
+    };
+    (!v.is_empty()).then(|| v.to_string())
+}
+
+/// Файли конфігів, які не можна публікувати: деякі моди тримають у config/ токени й облікові дані.
+fn private_config(rel: &str) -> bool {
+    let n = rel.to_lowercase();
+    ["token", "secret", "password", "passwd", "credential", "session", "account", "auth", ".key", "apikey", "api_key", "webhook"].iter().any(|w| n.contains(w))
+}
+
+/// Усі файли теки, без посилань-ярликів (вони могли б вивести за межі теки гри).
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            walk(&p, out);
+        let Ok(t) = e.file_type() else { continue };
+        if t.is_symlink() {
+            continue;
+        }
+        if t.is_dir() {
+            walk(&e.path(), out);
         } else {
-            out.push(p);
+            out.push(e.path());
         }
     }
 }
@@ -286,8 +319,8 @@ pub async fn export_mrpack(ctx: &Ctx, inst: &Instance) -> Result<Vec<u8>> {
         for e in std::fs::read_dir(game.join(d)).into_iter().flatten().flatten() {
             let p = e.path();
             let name = e.file_name().to_string_lossy().to_string();
-            // Вимкнені (.disabled) і теки ресурспаків не публікуємо — лише робочі файли.
-            if p.is_file() && !name.ends_with(".disabled") {
+            // Вимкнені (.disabled), теки ресурспаків і ярлики не публікуємо — лише робочі файли.
+            if e.file_type().is_ok_and(|t| t.is_file()) && !name.ends_with(".disabled") {
                 content.push((format!("{d}/{name}"), p));
             }
         }
@@ -297,7 +330,10 @@ pub async fn export_mrpack(ctx: &Ctx, inst: &Instance) -> Result<Vec<u8>> {
     walk(&game.join("config"), &mut cfg);
     for p in cfg {
         if let Ok(rel) = p.strip_prefix(&game) {
-            overrides.push((rel.to_string_lossy().replace('\\', "/"), p));
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            if !private_config(&rel) {
+                overrides.push((rel, p));
+            }
         }
     }
     let hashes: Vec<(String, String, String, u64)> = content
@@ -348,4 +384,25 @@ pub async fn export_mrpack(ctx: &Ctx, inst: &Instance) -> Result<Vec<u8>> {
 /// Ідентифікатор збірки ЛІЇ, з якої встановлено цю збірку (поле modpack.projectId = "lia:<id>").
 pub fn pack_of(inst: &Instance) -> Option<String> {
     inst.modpack.as_ref()?.project_id.strip_prefix("lia:").map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loader_versions_from_profile() {
+        assert_eq!(loader_version_of("fabric", "1.21.4", "fabric-loader-0.16.10-1.21.4").as_deref(), Some("0.16.10"));
+        assert_eq!(loader_version_of("quilt", "1.20.1", "quilt-loader-0.26.0-1.20.1").as_deref(), Some("0.26.0"));
+        assert_eq!(loader_version_of("forge", "1.20.1", "1.20.1-forge-47.2.0").as_deref(), Some("47.2.0"));
+        assert_eq!(loader_version_of("neoforge", "1.21.1", "neoforge-21.1.77").as_deref(), Some("21.1.77"));
+        assert_eq!(loader_version_of("fabric", "1.21.4", "1.21.4"), None);
+    }
+
+    #[test]
+    fn private_configs() {
+        assert!(private_config("config/discord/token.txt"));
+        assert!(private_config("config/AuthMe/session.json"));
+        assert!(!private_config("config/sodium-options.json"));
+    }
 }

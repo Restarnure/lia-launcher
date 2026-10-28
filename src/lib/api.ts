@@ -282,6 +282,23 @@ export interface LiaSession {
   name: string;
 }
 
+export interface LiaMe {
+  name: string;
+  email: string | null;
+  emailVerified: boolean;
+  mailEnabled: boolean;
+  created: number;
+  profiles: { name: string; kind: "offline" | "mojang" }[];
+}
+
+export interface LiaDevice {
+  id: string;
+  device: string;
+  created: number;
+  lastUsed: number;
+  current: boolean;
+}
+
 export interface LiaPresence {
   state: "online" | "playing";
   since: number;
@@ -414,7 +431,8 @@ export const api = {
 
   news: () => invoke<NewsEntry[]>("news_list"),
 
-  liaLogin: (name: string, password: string, register: boolean) => invoke<{ name: string }>("lia_login", { name, password, register }),
+  liaLogin: (name: string, password: string, email?: string) => invoke<{ name: string }>("lia_login", { name, password, email }),
+  liaPublic: (path: "/api/password/forgot" | "/api/password/reset", body: unknown) => invoke<void>("lia_public", { path, body }),
   liaLogout: () => invoke<void>("lia_logout"),
   liaSession: () => invoke<LiaSession | null>("lia_session"),
   lia: <T = Json>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown) => invoke<T>("lia_request", { method, path, body }),

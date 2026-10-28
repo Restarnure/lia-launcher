@@ -40,9 +40,9 @@ async fn world_through_relay() {
     let account = |name: &'static str, pass: &'static str| {
         let http = ctx.http.clone();
         async move {
-            match lia::login(&http, name, pass, false).await {
+            match lia::login(&http, name, pass, None).await {
                 Ok(s) => s,
-                Err(_) => lia::login(&http, name, pass, true).await.expect("реєстрація"),
+                Err(_) => lia::login(&http, name, pass, Some(&format!("{}@test.lia", name.to_lowercase()))).await.expect("реєстрація"),
             }
         }
     };

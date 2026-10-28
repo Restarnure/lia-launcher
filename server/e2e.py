@@ -1,6 +1,7 @@
-# Наскрізна перевірка сервера ЛІЇ: реєстрація, Yggdrasil (з перевіркою підпису через openssl), скіни,
-# друзі, статуси (WebSocket), ретранслятор, збірки.
-# Локально: запустити lia-server з LIA_HTTP=127.0.0.1:18080 LIA_PLAY_DOMAIN=play.localhost, потім `python e2e.py`.
+# Наскрізна перевірка сервера ЛІЇ: акаунт (пошта, вхід, пристрої, паролі), Yggdrasil (з перевіркою підпису
+# через openssl), друзі, статуси (WebSocket), ретранслятор, збірки.
+# Локально: запустити lia-server з LIA_HTTP=127.0.0.1:18080 LIA_PLAY_DOMAIN=play.localhost LIA_MAIL_LOG=1,
+# вивід сервера — у файл, і `LIA_SERVER_LOG=<файл> python e2e.py` (коди з листів читаються з логу).
 # Бойовий: LIA_B=https://lia.starnure.dev SKIP_RELAY=1 python e2e.py (створює тестові акаунти — приберіть після).
 # Ліміт реєстрацій — 5 на годину з IP: між прогонами перезапускайте сервер.
 import base64, hashlib, io, json, os, socket, struct, subprocess, sys, threading, time, urllib.request, zipfile
@@ -28,19 +29,61 @@ def req(method, path, body=None, token=None, raw=None, ctype="application/json")
         return e.code, json.loads(b) if b else None
 
 
+LOG = os.environ.get("LIA_SERVER_LOG")
+
+
+def mail_code(email, after=0):
+    """Останній код, «надісланий» на email (LIA_MAIL_LOG=1 друкує листи в лог сервера)."""
+    import re
+    for _ in range(20):
+        lines = [l for l in open(LOG, encoding="utf-8", errors="replace").read().splitlines()[after:] if f"MAIL to={email} " in l]
+        codes = [m.group(1) for l in lines for m in [re.search(r"Код: (\d{6})", l)] if m]
+        if codes:
+            return codes[-1]
+        time.sleep(0.2)
+    raise AssertionError(f"нема листа з кодом для {email}")
+
+
+def log_len():
+    return len(open(LOG, encoding="utf-8", errors="replace").read().splitlines()) if LOG else 0
+
+
+pw = lambda n: f"zelenyi-kit-{n}-{run}"
 a, b = "Alice" + run, "Bob" + run
-s, ra = req("POST", "/api/register", {"name": a, "password": "password1"})
+ea, eb = f"alice{run}@test.lia", f"bob{run}@test.lia"
+s, ra = req("POST", "/api/register", {"name": a, "email": ea, "password": pw(1), "device": "ПК Аліси"})
 assert s == 200, (s, ra)
-s, rb = req("POST", "/api/register", {"name": b, "password": "password2"})
+s, rb = req("POST", "/api/register", {"name": b, "email": eb, "password": pw(2), "device": "ПК Боба"})
 assert s == 200, rb
-assert req("POST", "/api/register", {"name": a.lower(), "password": "password1"})[0] == 409
-assert req("POST", "/api/register", {"name": "x", "password": "password1"})[0] == 400
+assert req("POST", "/api/register", {"name": a.lower(), "email": "x" + ea, "password": pw(1)})[0] == 409  # нік
+assert req("POST", "/api/register", {"name": "Other" + run, "email": ea.upper(), "password": pw(1)})[0] == 409  # пошта
+assert req("POST", "/api/register", {"name": "x", "email": "x@x.ua", "password": pw(1)})[0] == 400
+assert req("POST", "/api/register", {"name": "Weak" + run, "email": f"w{run}@test.lia", "password": "password1"})[0] == 400  # простий пароль
+assert req("POST", "/api/register", {"name": "admin", "email": f"ad{run}@test.lia", "password": pw(9)})[0] == 400  # зарезервовано
 ta, tb = ra["accessToken"], rb["accessToken"]
 
-# вхід у ЛІЯ ID (токен акаунта) і ігровий профіль (токен гри)
+s, me0 = req("GET", "/api/me", token=ta)
+assert me0["email"] == ea, me0
+if me0["mailEnabled"]:
+    assert not me0["emailVerified"] and LOG, "для перевірки пошти потрібен LIA_SERVER_LOG"
+    s, e = req("GET", "/api/friends", token=ta)
+    assert s == 403 and e["error"] == "EmailNotVerified", (s, e)  # без підтвердження соцмережа закрита
+    assert req("POST", "/api/email/verify", {"code": "000000"}, token=ta)[0] == 400
+    for who, tok, em in [(a, ta, ea), (b, tb, eb)]:
+        s, v = req("POST", "/api/email/verify", {"code": mail_code(em)}, token=tok)
+        assert s == 200 and v["emailVerified"], v
+    assert req("GET", "/api/friends", token=ta)[0] == 200
+
+# вхід у ЛІЯ ID (нік або пошта) і пристрої
 assert req("POST", "/api/login", {"name": a, "password": "bad"})[0] == 403
-s, login = req("POST", "/api/login", {"name": a, "password": "password1"})
+s, login = req("POST", "/api/login", {"name": ea, "password": pw(1), "device": "Ноутбук"})
 assert s == 200 and login["name"] == a, login
+s, sess = req("GET", "/api/sessions", token=ta)
+assert {x["device"] for x in sess} == {"ПК Аліси", "Ноутбук"} and sum(x["current"] for x in sess) == 1, sess
+other = next(x for x in sess if not x["current"])
+assert req("DELETE", f"/api/sessions/{other['id']}", token=ta)[0] == 204
+assert req("GET", "/api/me", token=login["accessToken"])[0] == 401  # той пристрій вийшов
+
 nick = "Nick" + run
 s, game = req("POST", "/api/game/session", {"kind": "offline", "name": nick}, token=ta)
 assert s == 200 and game["name"] == nick, game
@@ -56,27 +99,13 @@ assert req("POST", "/yggdrasil/authserver/validate", {"accessToken": ta})[0] == 
 # токен акаунта не годиться для входу в гру
 assert req("POST", "/yggdrasil/sessionserver/session/minecraft/join", {"accessToken": ta, "selectedProfile": pid, "serverId": "x"})[0] == 403
 
-# скін
-def make_png(w, h):
-    import zlib
-    raw = b"".join(b"\x00" + bytes([200, 140, 98, 255]) * w for _ in range(h))
-    ch = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
-    return b"\x89PNG\r\n\x1a\n" + ch(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)) + ch(b"IDAT", zlib.compress(raw)) + ch(b"IEND", b"")
-
-
-png = make_png(64, 64)
-s, me = req("PUT", "/api/me/skin?slim=true", raw=png, token=ta, ctype="image/png")
-assert s == 200 and me["slim"] and me["skin"].startswith(B + "/textures/"), me
-s, tex = req("GET", me["skin"][len(B):])
-assert s == 200 and tex == png
-
 # join / hasJoined з перевіркою підпису
 assert req("POST", "/yggdrasil/sessionserver/session/minecraft/join", {"accessToken": game["accessToken"], "selectedProfile": pid, "serverId": "srv1"})[0] == 204
 s, prof = req("GET", f"/yggdrasil/sessionserver/session/minecraft/hasJoined?username={nick}&serverId=srv1")
 assert s == 200 and prof["id"] == pid, (s, prof)
 p = prof["properties"][0]
 val = json.loads(base64.b64decode(p["value"]))
-assert val["textures"]["SKIN"]["metadata"]["model"] == "slim"
+assert val["profileName"] == nick and val["textures"] == {}, val  # офлайн-нік — стандартний скін
 open(os.path.join(HERE, "pub.pem"), "w").write(meta["signaturePublickey"])
 open(os.path.join(HERE, "val.bin"), "wb").write(p["value"].encode())
 open(os.path.join(HERE, "sig.bin"), "wb").write(base64.b64decode(p["signature"]))
@@ -84,7 +113,11 @@ v = subprocess.run(["openssl", "dgst", "-sha1", "-verify", "pub.pem", "-signatur
 assert "Verified OK" in v.stdout, v
 assert req("GET", f"/yggdrasil/sessionserver/session/minecraft/hasJoined?username={nick}&serverId=srv1")[0] == 204  # одноразово, далі — Mojang, який такого не знає
 # ліцензійний гравець без ЛІЇ: профіль і скін з Mojang, перепідписані нашим ключем
-s, notch = req("GET", "/yggdrasil/sessionserver/session/minecraft/profile/069a79f444e94726a5befca90e38aaf5?unsigned=false")
+for _ in range(3):  # сервер Mojang інколи відповідає порожньо — пробуємо ще
+    s, notch = req("GET", "/yggdrasil/sessionserver/session/minecraft/profile/069a79f444e94726a5befca90e38aaf5?unsigned=false")
+    if s == 200:
+        break
+    time.sleep(2)
 assert s == 200 and notch["name"] == "Notch" and notch["properties"][0]["signature"], (s, notch)
 s, prof2 = req("GET", f"/yggdrasil/sessionserver/session/minecraft/profile/{pid}")
 assert s == 200 and "signature" not in prof2["properties"][0]
@@ -251,6 +284,60 @@ s, feed = req("GET", "/api/feed", token=tb)
 assert {"pack_updated", "pack_published", "friend"} <= {e["kind"] for e in feed}, feed
 
 # незнайомцю приватна збірка не видна
-s, rc = req("POST", "/api/register", {"name": "Carol" + run, "password": "password3"})
-assert req("GET", f"/api/packs/{pack['id']}/file", token=rc["accessToken"])[0] == 404
+ec = f"carol{run}@test.lia"
+s, rc = req("POST", "/api/register", {"name": "Carol" + run, "email": ec, "password": pw(3)})
+tc = rc["accessToken"]
+if me0["mailEnabled"]:
+    req("POST", "/api/email/verify", {"code": mail_code(ec)}, token=tc)
+assert req("GET", f"/api/packs/{pack['id']}/file", token=tc)[0] == 404
+
+# відхилений запит у друзі: той, хто просив, не може засипати повторними
+assert req("POST", f"/api/friends/{a}", token=tc)[0] == 204
+assert [x["name"] for x in req("GET", "/api/friends", token=ta)[1]["incoming"]] == ["Carol" + run]
+assert req("DELETE", f"/api/friends/Carol{run}", token=ta)[0] == 204  # Аліса відхиляє
+assert req("GET", "/api/friends", token=ta)[1]["incoming"] == []
+assert req("POST", f"/api/friends/{a}", token=tc)[0] == 204  # Керол пробує ще раз — тихо ігнорується
+assert req("GET", "/api/friends", token=ta)[1]["incoming"] == []
+assert [x["name"] for x in req("GET", "/api/friends", token=tc)[1]["outgoing"]] == [a]  # для Керол — «чекає»
+# `_` у пошуку — звичайний символ, а не шаблон
+assert req("GET", "/api/users?q=Alic_", token=tc)[1] == []
+
+# зміна пароля: інші пристрої виходять, цей лишається
+s, l2 = req("POST", "/api/login", {"name": "Carol" + run, "password": pw(3)})
+assert req("POST", "/api/me/password", {"old": "bad", "new": pw(4)}, token=tc)[0] == 403
+assert req("POST", "/api/me/password", {"old": pw(3), "new": pw(4)}, token=tc)[0] == 204
+assert req("GET", "/api/me", token=l2["accessToken"])[0] == 401
+assert req("GET", "/api/me", token=tc)[0] == 200
+
+if me0["mailEnabled"]:
+    # відновлення пароля: код з пошти, вихід з усіх пристроїв
+    n = log_len()
+    assert req("POST", "/api/password/forgot", {"login": ec}, token=None)[0] == 204
+    assert req("POST", "/api/password/forgot", {"login": "nobody" + run}, token=None)[0] == 204  # не підказуємо, чи є акаунт
+    code = mail_code(ec, n)
+    assert req("POST", "/api/password/reset", {"login": ec, "code": "111111", "password": pw(5)})[0] == 400
+    assert req("POST", "/api/password/reset", {"login": ec, "code": code, "password": pw(5)})[0] == 204
+    assert req("GET", "/api/me", token=tc)[0] == 401
+    s, l3 = req("POST", "/api/login", {"name": ec, "password": pw(5)})
+    assert s == 200, l3
+    tc = l3["accessToken"]
+    # зміна пошти: код на нову адресу
+    nc = f"carol2{run}@test.lia"
+    assert req("POST", "/api/email/change", {"email": nc, "password": pw(5)}, token=tc)[0] == 204
+    assert req("POST", "/api/email/verify", {"code": mail_code(nc)}, token=tc)[0] == 200
+    assert req("GET", "/api/me", token=tc)[1]["email"] == nc
+    pc = pw(5)
+else:
+    pc = pw(4)
+
+# захист від підбору: після 8 невдалих спроб вхід закрито навіть з правильним паролем
+for _ in range(8):
+    assert req("POST", "/api/login", {"name": "Carol" + run, "password": "nope"})[0] == 403
+s, e = req("POST", "/api/login", {"name": "Carol" + run, "password": pc})
+assert s == 429, (s, e)
+
+# видалення акаунта — лише з паролем
+assert req("DELETE", "/api/me", {"password": "bad"}, token=tc)[0] == 403
+assert req("DELETE", "/api/me", {"password": pc}, token=tc)[0] == 204
+assert req("GET", "/api/me", token=tc)[0] == 401
 print("e2e: ok")

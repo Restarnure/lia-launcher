@@ -1,5 +1,5 @@
-//! API ЛІЇ для лаунчера: реєстрація, профіль і скін, друзі, статуси, збірки, стрічка.
-use crate::ygg::{self, hex};
+//! API ЛІЇ для лаунчера: друзі, статуси, збірки, стрічка. Акаунт — у account.rs.
+use crate::ygg::hex;
 use crate::{bad, forbidden, internal, not_found, ApiErr, App, R, S};
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -27,15 +27,16 @@ pub struct User {
     pub id: i64,
     pub name: String,
     pub uuid: String,
-    pub skin: Option<String>,
-    pub slim: bool,
     pub bio: String,
+    pub email: Option<String>,
+    /// Пошту підтверджено (або пошта на сервері вимкнена — тоді підтверджувати нема чим).
+    pub verified: bool,
 }
 
-const USER_COLS: &str = "id, name, uuid, skin, slim, bio";
+const USER_COLS: &str = "id, name, uuid, bio, email, email_verified";
 
 fn row_user(r: &rusqlite::Row) -> rusqlite::Result<User> {
-    Ok(User { id: r.get(0)?, name: r.get(1)?, uuid: r.get(2)?, skin: r.get(3)?, slim: r.get::<_, i64>(4)? != 0, bio: r.get(5)? })
+    Ok(User { id: r.get(0)?, name: r.get(1)?, uuid: r.get(2)?, bio: r.get(3)?, email: r.get(4)?, verified: r.get::<_, i64>(5)? != 0 || !crate::mail::enabled() })
 }
 
 pub fn user_by(app: &App, col: &str, val: &str) -> Option<User> {
@@ -56,152 +57,51 @@ pub fn token_hash(token: &str) -> String {
 }
 
 /// Акаунт ЛІЯ ID за токеном лаунчера. Ігрові токени (передаються в гру й видні в процесах) сюди не підходять.
+/// Сесія, якою не користувались 90 днів, недійсна.
 pub fn token_user(app: &App, token: &str) -> Option<User> {
     let db = app.db.lock().unwrap();
-    let id: i64 = db.query_row("SELECT user FROM tokens WHERE hash = ?1 AND profile IS NULL", [token_hash(token)], |r| r.get(0)).ok()?;
+    let hash = token_hash(token);
+    let (id, created, used): (i64, i64, Option<i64>) = db.query_row("SELECT user, created, last_used FROM tokens WHERE hash = ?1 AND profile IS NULL", [&hash], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()?;
+    let now = crate::now();
+    let used = used.unwrap_or(created);
+    if now - used > crate::account::SESSION_IDLE {
+        let _ = db.execute("DELETE FROM tokens WHERE hash = ?1", [&hash]);
+        return None;
+    }
+    if now - used > 3600_000 {
+        let _ = db.execute("UPDATE tokens SET last_used = ?1 WHERE hash = ?2", params![now, hash]);
+    }
     db.query_row(&format!("SELECT {USER_COLS} FROM users WHERE id = ?1"), [id], row_user).ok()
 }
 
-/// Користувач за заголовком `Authorization: Bearer <токен>`.
+fn unauthorized() -> ApiErr {
+    ApiErr(StatusCode::UNAUTHORIZED, "Unauthorized", "увійдіть у ЛІЯ ID знову".into())
+}
+
+/// Будь-який вхід, навіть без підтвердженої пошти (для сторінки акаунта).
+pub fn auth_any(app: &App, h: &HeaderMap) -> R<User> {
+    token_user(app, crate::account::token_from(h)).ok_or_else(unauthorized)
+}
+
+/// Вхід з підтвердженою поштою — для друзів, збірок, світів і гри.
 pub fn auth(app: &App, h: &HeaderMap) -> R<User> {
-    let t = h.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).unwrap_or("");
-    token_user(app, t).ok_or_else(|| ApiErr(StatusCode::UNAUTHORIZED, "Unauthorized", "увійдіть у ЛІЯ ID знову".into()))
-}
-
-fn hash_password(pass: &str) -> R<String> {
-    let salt: [u8; 16] = rand::random();
-    let mut out = [0u8; 32];
-    argon2::Argon2::default().hash_password_into(pass.as_bytes(), &salt, &mut out).map_err(internal)?;
-    Ok(format!("argon2:{}:{}", hex(&salt), hex(&out)))
-}
-
-fn verify_password(pass: &str, stored: &str) -> bool {
-    let mut it = stored.split(':');
-    let (Some("argon2"), Some(salt), Some(hash)) = (it.next(), it.next(), it.next()) else {
-        return false;
-    };
-    let salt: Vec<u8> = (0..salt.len()).step_by(2).filter_map(|i| u8::from_str_radix(salt.get(i..i + 2)?, 16).ok()).collect();
-    let mut out = [0u8; 32];
-    argon2::Argon2::default().hash_password_into(pass.as_bytes(), &salt, &mut out).is_ok() && hex(&out) == hash
+    let u = auth_any(app, h)?;
+    if !u.verified {
+        return Err(ApiErr(StatusCode::FORBIDDEN, "EmailNotVerified", "спершу підтвердіть пошту ЛІЯ ID".into()));
+    }
+    Ok(u)
 }
 
 pub fn check_password(app: &App, name: &str, pass: &str) -> R<User> {
     let stored: Option<String> = app.db.lock().unwrap().query_row("SELECT pass FROM users WHERE name = ?1", [name], |r| r.get(0)).optional().map_err(internal)?;
     match stored {
-        Some(s) if verify_password(pass, &s) => user_by(app, "name", name).ok_or_else(not_found),
-        _ => Err(forbidden("Неправильний нік або пароль.")),
+        Some(s) if crate::account::verify_password(pass, &s) => user_by(app, "name", name).ok_or_else(not_found),
+        _ => Err(forbidden("Неправильний пароль.")),
     }
 }
 
-fn valid_name(n: &str) -> bool {
-    (3..=16).contains(&n.len()) && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-fn valid_password(p: &str) -> R<()> {
-    if p.chars().count() < 8 || p.len() > 128 {
-        return Err(bad("пароль має бути від 8 символів"));
-    }
-    Ok(())
-}
-
-fn public(app: &App, u: &User) -> Value {
-    json!({
-        "name": u.name,
-        "uuid": u.uuid,
-        "skin": u.skin.as_ref().map(|s| app.texture_url(s)),
-        "slim": u.slim,
-        "bio": u.bio,
-    })
-}
-
-#[derive(Deserialize)]
-pub struct RegisterReq {
-    name: String,
-    password: String,
-}
-
-pub async fn register(st: S, headers: HeaderMap, Json(r): Json<RegisterReq>) -> R<Json<Value>> {
-    if !valid_name(&r.name) {
-        return Err(bad("нік: 3–16 символів, латинські літери, цифри та _"));
-    }
-    valid_password(&r.password)?;
-    st.limit(format!("reg:{}", crate::client_ip(&headers)), 5, Duration::from_secs(3600))?;
-    let pass = hash_password(&r.password)?;
-    let uuid = uuid::Uuid::new_v4().hyphenated().to_string();
-    let res = st.db.lock().unwrap().execute("INSERT INTO users (name, uuid, pass, created) VALUES (?1, ?2, ?3, ?4)", params![r.name, uuid, pass, crate::now()]);
-    if let Err(e) = res {
-        if matches!(e, rusqlite::Error::SqliteFailure(ref f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation) {
-            return Err(ApiErr(StatusCode::CONFLICT, "NameTaken", "цей нік уже зайнятий".into()));
-        }
-        return Err(internal(e));
-    }
-    let u = user_by(&st, "uuid", &uuid).ok_or_else(not_found)?;
-    Ok(Json(ygg::account_session(&st, &u)?))
-}
-
-pub async fn me(st: S, h: HeaderMap) -> R<Json<Value>> {
-    let u = auth(&st, &h)?;
-    let mut v = public(&st, &u);
-    v["profiles"] = json!(ygg::profiles_of(&st, u.id));
-    Ok(Json(v))
-}
-
-#[derive(Deserialize)]
-pub struct PasswordReq {
-    old: String,
-    new: String,
-}
-
-pub async fn change_password(st: S, h: HeaderMap, Json(r): Json<PasswordReq>) -> R<StatusCode> {
-    let u = auth(&st, &h)?;
-    st.limit(format!("auth:{}", crate::client_ip(&h)), 20, Duration::from_secs(600))?;
-    check_password(&st, &u.name, &r.old)?;
-    valid_password(&r.new)?;
-    st.db.lock().unwrap().execute("UPDATE users SET pass = ?1 WHERE id = ?2", params![hash_password(&r.new)?, u.id]).map_err(internal)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-// ------------------------------------------------------------ скіни
-
-/// PNG скіна 64×64 або 64×32 — інше не приймаємо.
-fn check_skin(bytes: &[u8]) -> R<()> {
-    let d = png::Decoder::new(std::io::Cursor::new(bytes));
-    let r = d.read_info().map_err(|_| bad("це не PNG"))?;
-    let (w, hh) = (r.info().width, r.info().height);
-    if w != 64 || (hh != 64 && hh != 32) {
-        return Err(bad("скін має бути 64×64"));
-    }
-    Ok(())
-}
-
-pub async fn set_skin(st: S, h: HeaderMap, Query(q): Query<HashMap<String, String>>, body: Bytes) -> R<Json<Value>> {
-    let u = auth(&st, &h)?;
-    if body.len() > 64 * 1024 {
-        return Err(bad("файл завеликий"));
-    }
-    check_skin(&body)?;
-    let hash = hex(&Sha1::digest(&body));
-    let path = st.cfg.data.join("textures").join(format!("{hash}.png"));
-    if !path.exists() {
-        std::fs::write(&path, &body).map_err(internal)?;
-    }
-    let slim = q.get("slim").is_some_and(|v| v == "true");
-    st.db.lock().unwrap().execute("UPDATE users SET skin = ?1, slim = ?2 WHERE id = ?3", params![hash, slim as i64, u.id]).map_err(internal)?;
-    Ok(Json(public(&st, &user_by_id(&st, u.id).ok_or_else(not_found)?)))
-}
-
-pub async fn clear_skin(st: S, h: HeaderMap) -> R<StatusCode> {
-    let u = auth(&st, &h)?;
-    st.db.lock().unwrap().execute("UPDATE users SET skin = NULL WHERE id = ?1", [u.id]).map_err(internal)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-pub async fn texture(st: S, Path(hash): Path<String>) -> R<Response> {
-    if hash.len() != 40 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(not_found());
-    }
-    let bytes = std::fs::read(st.cfg.data.join("textures").join(format!("{hash}.png"))).map_err(|_| not_found())?;
-    Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "public, max-age=31536000, immutable")], bytes).into_response())
+fn public(_app: &App, u: &User) -> Value {
+    json!({ "name": u.name, "uuid": u.uuid, "bio": u.bio })
 }
 
 // ------------------------------------------------------------ друзі
@@ -217,10 +117,12 @@ enum Rel {
 fn relation(app: &App, me: i64, other: i64) -> Rel {
     let db = app.db.lock().unwrap();
     let get = |a: i64, b: i64| db.query_row("SELECT accepted FROM friends WHERE a = ?1 AND b = ?2", [a, b], |r| r.get::<_, i64>(0)).optional().ok().flatten();
+    // accepted: 1 — друзі, 0 — запит, -1 — запит відхилено (той, хто просив, про це не дізнається
+    // і не може засипати повторними запитами).
     match (get(me, other), get(other, me)) {
         (Some(1), _) | (_, Some(1)) => Rel::Friends,
         (Some(_), _) => Rel::Outgoing,
-        (_, Some(_)) => Rel::Incoming,
+        (_, Some(0)) => Rel::Incoming,
         _ => Rel::None,
     }
 }
@@ -264,7 +166,8 @@ pub async fn friends(st: S, h: HeaderMap) -> R<Json<Value>> {
         match (acc, a == me.id) {
             (1, _) => friends.push(friend_view(&st, &u)),
             (_, true) => outgoing.push(public(&st, &u)),
-            (_, false) => incoming.push(public(&st, &u)),
+            (0, false) => incoming.push(public(&st, &u)),
+            _ => {} // запит, який я відхилив
         }
     }
     Ok(Json(json!({ "friends": friends, "incoming": incoming, "outgoing": outgoing })))
@@ -281,16 +184,15 @@ pub async fn friend_add(st: S, h: HeaderMap, Path(name): Path<String>) -> R<Stat
         Rel::Friends | Rel::Outgoing => {}
         Rel::Incoming => {
             st.db.lock().unwrap().execute("UPDATE friends SET accepted = 1 WHERE a = ?1 AND b = ?2", [other.id, me.id]).map_err(internal)?;
-            event(&st, me.id, "friend", None, json!({ "a": me.name, "b": other.name }));
-            notify(&st, other.id, &json!({ "type": "friends" }));
-            // Тепер видно статуси одне одного.
-            for (x, y) in [(&me, &other), (&other, &me)] {
-                if let Some(p) = st.presence.lock().unwrap().get(&x.id).cloned() {
-                    notify(&st, y.id, &json!({ "type": "presence", "name": x.name, "presence": p }));
-                }
-            }
+            befriended(&st, &me, &other);
         }
         Rel::None => {
+            // Раніше відхилений запит від цього гравця — тепер я сам хочу дружити: просто приймаємо.
+            let revived = st.db.lock().unwrap().execute("UPDATE friends SET accepted = 1 WHERE a = ?1 AND b = ?2 AND accepted = -1", [other.id, me.id]).map_err(internal)?;
+            if revived > 0 {
+                befriended(&st, &me, &other);
+                return Ok(StatusCode::NO_CONTENT);
+            }
             st.limit(format!("friend:{}", me.id), 30, Duration::from_secs(3600))?;
             st.db.lock().unwrap().execute("INSERT INTO friends (a, b, accepted, created) VALUES (?1, ?2, 0, ?3)", params![me.id, other.id, crate::now()]).map_err(internal)?;
             notify(&st, other.id, &json!({ "type": "friends", "request": me.name }));
@@ -299,9 +201,25 @@ pub async fn friend_add(st: S, h: HeaderMap, Path(name): Path<String>) -> R<Stat
     Ok(StatusCode::NO_CONTENT)
 }
 
+fn befriended(st: &App, me: &User, other: &User) {
+    event(st, me.id, "friend", None, json!({ "a": me.name, "b": other.name }));
+    notify(st, other.id, &json!({ "type": "friends" }));
+    // Тепер видно статуси одне одного.
+    for (x, y) in [(me, other), (other, me)] {
+        if let Some(p) = st.presence.lock().unwrap().get(&x.id).cloned() {
+            notify(st, y.id, &json!({ "type": "presence", "name": x.name, "presence": p }));
+        }
+    }
+}
+
 pub async fn friend_remove(st: S, h: HeaderMap, Path(name): Path<String>) -> R<StatusCode> {
     let me = auth(&st, &h)?;
     let other = user_by(&st, "name", &name).ok_or_else(not_found)?;
+    if relation(&st, me.id, other.id) == Rel::Incoming {
+        // Відхилити запит: лишаємо позначку, щоб той самий гравець не надсилав його знову.
+        st.db.lock().unwrap().execute("UPDATE friends SET accepted = -1 WHERE a = ?1 AND b = ?2", [other.id, me.id]).map_err(internal)?;
+        return Ok(StatusCode::NO_CONTENT);
+    }
     st.db.lock().unwrap().execute("DELETE FROM friends WHERE (a = ?1 AND b = ?2) OR (a = ?2 AND b = ?1)", [me.id, other.id]).map_err(internal)?;
     notify(&st, other.id, &json!({ "type": "friends" }));
     Ok(StatusCode::NO_CONTENT)
@@ -315,8 +233,8 @@ pub async fn search_users(st: S, h: HeaderMap, Query(q): Query<HashMap<String, S
     }
     let users: Vec<User> = {
         let db = st.db.lock().unwrap();
-        let mut stmt = db.prepare(&format!("SELECT {USER_COLS} FROM users WHERE name LIKE ?1 AND id != ?2 ORDER BY length(name) LIMIT 10")).map_err(internal)?;
-        let v = stmt.query_map(params![format!("{s}%"), me.id], row_user).map_err(internal)?.flatten().collect();
+        let mut stmt = db.prepare(&format!("SELECT {USER_COLS} FROM users WHERE name LIKE ?1 ESCAPE '\\' AND id != ?2 ORDER BY length(name) LIMIT 10")).map_err(internal)?;
+        let v = stmt.query_map(params![format!("{}%", s.replace('_', "\\_")), me.id], row_user).map_err(internal)?.flatten().collect();
         v
     };
     Ok(Json(json!(users.iter().map(|u| public(&st, u)).collect::<Vec<_>>())))
@@ -345,7 +263,7 @@ pub struct WsQuery {
 }
 
 pub async fn ws(st: S, Query(q): Query<WsQuery>, up: WebSocketUpgrade) -> R<Response> {
-    let u = token_user(&st, &q.token).ok_or_else(|| forbidden("Invalid token."))?;
+    let u = token_user(&st, &q.token).filter(|u| u.verified).ok_or_else(|| forbidden("Invalid token."))?;
     let app = st.0.clone();
     Ok(up.on_upgrade(move |sock| session_ws(app, u, sock)))
 }
@@ -416,8 +334,12 @@ async fn session_ws(app: Arc<App>, u: User, sock: WebSocket) {
         let Ok(v) = serde_json::from_str::<Value>(&t) else { continue };
         if v["type"] == "presence" {
             let p = clean_presence(&app, &u, &v);
-            app.presence.lock().unwrap().insert(u.id, p);
-            broadcast_presence(&app, &u);
+            // Друзям — лише справжні зміни, а не кожне повідомлення (захист від засипання трафіком).
+            let same = app.presence.lock().unwrap().get(&u.id).is_some_and(|old| old["state"] == p["state"] && old["game"] == p["game"] && old["world"] == p["world"]);
+            if !same {
+                app.presence.lock().unwrap().insert(u.id, p);
+                broadcast_presence(&app, &u);
+            }
         }
     }
     writer.abort();
