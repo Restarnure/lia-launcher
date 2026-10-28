@@ -63,6 +63,15 @@ assert req("POST", "/api/register", {"name": "Weak" + run, "email": f"w{run}@tes
 assert req("POST", "/api/register", {"name": "admin", "email": f"ad{run}@test.lia", "password": pw(9)})[0] == 400  # зарезервовано
 ta, tb = ra["accessToken"], rb["accessToken"]
 
+# Старий лаунчер (і гра, яку він запустив) — 426 «оновіть»; новий і не-лаунчер проходять.
+for ua, code in [("LIA-Launcher/1.1.2", 426), ("LIA-Launcher/1.1.2 Java/21.0.7", 426), ("LIA-Launcher/99.0.0", 200), ("Mozilla/5.0", 200)]:
+    r = urllib.request.Request(B + "/api/me", headers={"User-Agent": ua, "Authorization": "Bearer " + ta})
+    try:
+        got = urllib.request.urlopen(r).status
+    except urllib.error.HTTPError as e:
+        got = e.code
+    assert got == code, (ua, got)
+
 s, me0 = req("GET", "/api/me", token=ta)
 assert me0["email"] == ea, me0
 if me0["mailEnabled"]:
@@ -134,7 +143,7 @@ assert any(x["name"] == b for x in found)
 
 
 # WebSocket: Боб бачить статус Аліси
-def ws_connect(token):
+def ws_connect(token, v="&v=99.0.0", status=b"101"):
     import ssl
     if B.startswith("https"):
         host = B.split("//")[1]
@@ -142,11 +151,11 @@ def ws_connect(token):
     else:
         sock = socket.create_connection(("127.0.0.1", int(B.rsplit(":", 1)[1])))
     key = base64.b64encode(os.urandom(16)).decode()
-    sock.sendall(f"GET /api/ws?token={token} HTTP/1.1\r\nHost: {B.split('//')[1]}\r\nUser-Agent: Mozilla/5.0 LIA\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n".encode())
+    sock.sendall(f"GET /api/ws?token={token}{v} HTTP/1.1\r\nHost: {B.split('//')[1]}\r\nUser-Agent: Mozilla/5.0 LIA\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n".encode())
     resp = b""
     while b"\r\n\r\n" not in resp:
         resp += sock.recv(1)
-    assert b"101" in resp.split(b"\r\n")[0], resp
+    assert status in resp.split(b"\r\n")[0], resp
     return sock
 
 
@@ -171,6 +180,7 @@ def ws_recv(sock, timeout=3):
             return json.loads(data)
 
 
+ws_connect(tb, "", b"426").close()  # старий лаунчер версії не називає
 wb = ws_connect(tb)
 assert req("POST", f"/api/friends/{a}", token=tb)[0] == 204  # прийняв
 s, fa = req("GET", "/api/friends", token=ta)
@@ -189,7 +199,7 @@ lan.bind(("127.0.0.1", 0))
 lan.listen()
 lan_port = lan.getsockname()[1]
 ctl = socket.create_connection(RELAY)
-ctl.sendall(b"\x00LIA" + json.dumps({"kind": "host", "token": ta}).encode() + b"\n")
+ctl.sendall(b"\x00LIA" + json.dumps({"kind": "host", "token": ta, "v": "99.0.0"}).encode() + b"\n")
 f = ctl.makefile("r")
 hello = json.loads(f.readline())
 code = hello["code"]

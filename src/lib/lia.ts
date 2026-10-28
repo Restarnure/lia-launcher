@@ -77,7 +77,8 @@ function connect() {
   ws = null;
   const s = st.session;
   if (!s || !ready()) return set({ online: false });
-  const sock = new WebSocket(`${s.api.replace(/^http/, "ws")}/api/ws?token=${encodeURIComponent(s.token)}`);
+  // Версія: User-Agent у вікна браузерний, а старіших лаунчерів сервер не пускає.
+  const sock = new WebSocket(`${s.api.replace(/^http/, "ws")}/api/ws?token=${encodeURIComponent(s.token)}&v=${encodeURIComponent(getState().info?.version ?? "")}`);
   ws = sock;
   sock.onopen = () => {
     set({ online: true });

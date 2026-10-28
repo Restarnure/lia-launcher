@@ -101,7 +101,9 @@ pub async fn parse(resp: reqwest::Response) -> Result<Value> {
     Err(match status.as_u16() {
         401 => err("lia_auth", "увійдіть у ЛІЯ ID знову"),
         // Ліміт тіла запиту сервера чи Cloudflare — відповідь тоді не JSON, і «HTTP 413» нічого не пояснює.
-        413 => err("lia", "збірка завелика для публікації"),
+        413 => err("lia", "збірка завелика для публікації (до 100 МБ)"),
+        // Сервер більше не пускає цю версію лаунчера.
+        426 => err("outdated", msg),
         _ => err("lia", msg),
     })
 }
@@ -227,7 +229,8 @@ pub async fn share(instance: &str, token: &str, port: u16, on_end: impl FnOnce()
     if let Some(s) = shares().lock().unwrap().get(instance).filter(|s| same(s)) {
         return Ok((s.code.clone(), s.address.clone()));
     }
-    let s = relay_conn(json!({ "kind": "host", "token": token })).await.ctx(|| "ретранслятор ЛІЇ".into())?;
+    // Версія: старіших лаунчерів ретранслятор не пускає.
+    let s = relay_conn(json!({ "kind": "host", "token": token, "v": env!("CARGO_PKG_VERSION") })).await.ctx(|| "ретранслятор ЛІЇ".into())?;
     let (r, w) = s.into_split();
     let mut lines = BufReader::new(r).lines();
     let hello: Value = match tokio::time::timeout(std::time::Duration::from_secs(10), lines.next_line()).await {
@@ -451,7 +454,7 @@ mod tests {
         let r = &relay;
         let open = |code: &'static str| async move {
             let (h, mut ctl) = hello(r).await;
-            assert_eq!(h, json!({ "kind": "host", "token": "tok" }));
+            assert_eq!(h, json!({ "kind": "host", "token": "tok", "v": env!("CARGO_PKG_VERSION") }));
             ctl.get_mut().write_all(format!("{{\"code\":\"{code}\",\"address\":\"{code}.play.test:25570\"}}\n").as_bytes()).await.unwrap();
             ctl
         };

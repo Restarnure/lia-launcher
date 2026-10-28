@@ -262,9 +262,14 @@ pub async fn user(st: S, h: HeaderMap, Path(name): Path<String>) -> R<Json<Value
 #[derive(Deserialize)]
 pub struct WsQuery {
     token: String,
+    /// Версія лаунчера: WebSocket відкриває вікно, і User-Agent там браузерний.
+    v: Option<String>,
 }
 
 pub async fn ws(st: S, Query(q): Query<WsQuery>, up: WebSocketUpgrade) -> R<Response> {
+    if q.v.as_deref().and_then(crate::parse_version).is_none_or(|v| v < st.cfg.min_launcher) {
+        return Err(crate::outdated());
+    }
     let u = token_user(&st, &q.token).filter(|u| u.verified).ok_or_else(|| forbidden("Invalid token."))?;
     // Кожне з'єднання тримає буфери; без межі один акаунт вичерпав би пам'ять тисячами з'єднань.
     if st.sockets.lock().unwrap().get(&u.id).is_some_and(|l| l.len() >= 16) {

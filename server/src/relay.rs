@@ -90,7 +90,8 @@ async fn route(app: &Arc<App>, mut s: TcpStream) -> std::io::Result<Option<Cont>
         let v: Value = serde_json::from_str(&line).unwrap_or_default();
         let s = r.into_inner();
         return Ok(match v["kind"].as_str() {
-            Some("host") => host(app.clone(), s, v["token"].as_str().unwrap_or("")),
+            // Старі лаунчери версії не називають — їм світ не відкриваємо (просимо оновитися через API).
+            Some("host") if v["v"].as_str().and_then(crate::parse_version).is_some_and(|v| v >= app.cfg.min_launcher) => host(app.clone(), s, v["token"].as_str().unwrap_or("")),
             Some("data") => data(app.clone(), s, v["id"].as_str().unwrap_or("")),
             _ => None,
         });

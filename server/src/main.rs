@@ -26,6 +26,8 @@ pub struct Config {
     pub play_domain: String,
     pub relay_port: u16,
     pub data: PathBuf,
+    /// Старіші лаунчери (з відомими вадами) сервер не пускає — просить оновитися.
+    pub min_launcher: [u32; 3],
 }
 
 pub struct App {
@@ -51,6 +53,25 @@ pub type S = axum::extract::State<Arc<App>>;
 /// Помилка у форматі Yggdrasil — його ж читає й лаунчер.
 #[derive(Debug)]
 pub struct ApiErr(pub StatusCode, pub &'static str, pub String);
+
+/// «1.1.3», «1.1.3 Java/21» → [1, 1, 3].
+pub fn parse_version(v: &str) -> Option<[u32; 3]> {
+    let mut it = v.split(|c: char| !c.is_ascii_digit() && c != '.').next()?.split('.').map(|p| p.parse().ok());
+    Some([it.next()??, it.next()??, it.next()??])
+}
+
+pub fn outdated() -> ApiErr {
+    ApiErr(StatusCode::UPGRADE_REQUIRED, "Outdated", "Ця версія ЛІЇ застаріла, оновіть лаунчер: Налаштування → «Перевірити оновлення».".into())
+}
+
+/// Лаунчер (і гра, запущена ним, — Java дописує « Java/21») називає версію в User-Agent «LIA-Launcher/1.1.3».
+async fn gate(axum::extract::State(app): S, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let ua = req.headers().get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("");
+    if ua.strip_prefix("LIA-Launcher/").and_then(parse_version).is_some_and(|v| v < app.cfg.min_launcher) {
+        return outdated().into_response();
+    }
+    next.run(req).await
+}
 
 impl IntoResponse for ApiErr {
     fn into_response(self) -> Response {
@@ -115,6 +136,7 @@ async fn main() {
         play_domain: env("LIA_PLAY_DOMAIN", "play.localhost"),
         relay_port: env("LIA_RELAY_PORT", "25570").parse().expect("LIA_RELAY_PORT"),
         data: PathBuf::from(env("LIA_DATA", "data")),
+        min_launcher: parse_version(&env("LIA_MIN_LAUNCHER", "1.1.3")).expect("LIA_MIN_LAUNCHER"),
     };
     std::fs::create_dir_all(cfg.data.join("packs")).expect("тека даних");
     let (key, public_pem) = ygg::load_key(&cfg.data.join("signing.pem"));
@@ -190,6 +212,7 @@ async fn main() {
         .route("/api/feed", get(api::feed))
         .route("/api/ws", get(api::ws))
         .route("/health", get(|| async { "ok" }))
+        .layer(axum::middleware::from_fn_with_state(app.clone(), gate))
         .with_state(app);
 
     let listener = tokio::net::TcpListener::bind(&http).await.expect("HTTP-порт");
@@ -199,6 +222,16 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn versions() {
+        assert_eq!(super::parse_version("1.1.3"), Some([1, 1, 3]));
+        assert_eq!(super::parse_version("1.10.0 Java/21.0.7"), Some([1, 10, 0]));
+        assert!(super::parse_version("1.1.2").unwrap() < [1, 1, 3] && super::parse_version("1.2.0").unwrap() > [1, 1, 3]);
+        for bad in ["e2e", "", "1.1", "x1.1.3"] {
+            assert_eq!(super::parse_version(bad), None, "{bad}");
+        }
+    }
+
     #[test]
     fn client_ip_v6_is_a_network() {
         let ip = |v: &str| {
