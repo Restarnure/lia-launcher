@@ -1,5 +1,5 @@
 use crate::crypto;
-use crate::error::{err, Context, Result};
+use crate::error::{err, Result};
 use crate::paths::Paths;
 use crate::util;
 use base64::Engine;
@@ -56,11 +56,17 @@ fn store_path() -> std::path::PathBuf {
 }
 
 pub fn load() -> Vec<Account> {
-    std::fs::read(store_path())
-        .ok()
-        .and_then(|b| crypto::open(&b).ok())
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    load_from(&store_path())
+}
+
+fn load_from(path: &std::path::Path) -> Vec<Account> {
+    let Ok(b) = std::fs::read(path) else { return Vec::new() };
+    if let Some(list) = crypto::open(&b).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
+        return list;
+    }
+    // Не розшифрувався (інший користувач Windows, пошкоджений файл) — відкладаємо, щоб наступне збереження його не стерло.
+    let _ = std::fs::rename(path, path.with_extension(format!("dat.broken-{}", util::now_ms())));
+    Vec::new()
 }
 
 pub fn save(accounts: &[Account]) -> Result<()> {
@@ -140,8 +146,9 @@ struct OAuth {
     refresh_token: String,
 }
 
+// Мережеві помилки лишаються Error::Net (без .ctx): так запуск без інтернету грає зі старим токеном.
 async fn oauth(http: &reqwest::Client, form: &[(&str, &str)]) -> Result<OAuth> {
-    let resp = http.post(MS_TOKEN).form(form).send().await.ctx(|| "login.microsoftonline.com".into())?;
+    let resp = http.post(MS_TOKEN).form(form).send().await?;
     let status = resp.status();
     let body: serde_json::Value = resp.json().await.unwrap_or_default();
     if !status.is_success() {
@@ -174,7 +181,7 @@ async fn refresh_ms(http: &reqwest::Client, client_id: &str, refresh: &str) -> R
 }
 
 async fn post_json(http: &reqwest::Client, url: &str, body: serde_json::Value) -> Result<(u16, serde_json::Value)> {
-    let resp = http.post(url).header("Accept", "application/json").json(&body).send().await.ctx(|| url.to_string())?;
+    let resp = http.post(url).header("Accept", "application/json").json(&body).send().await?;
     let status = resp.status().as_u16();
     let text = resp.text().await.unwrap_or_default();
     Ok((status, serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }))))
@@ -371,6 +378,34 @@ mod tests {
         assert!(validate_nick("ab").is_err());
         assert!(validate_nick("Стів").is_err());
         assert!(validate_nick("a_very_long_name_17").is_err());
+    }
+
+    #[test]
+    fn unreadable_store_is_kept() {
+        let dir = std::env::temp_dir().join(format!("lia-acc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("accounts.dat");
+        std::fs::write(&path, b"LIA1 not a dpapi blob").unwrap();
+        assert!(load_from(&path).is_empty());
+        assert!(!path.exists());
+        let kept: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("accounts.dat.broken-")).collect();
+        assert_eq!(kept.len(), 1);
+        assert!(load_from(&path).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn offline_refresh_is_net_error() {
+        // Проксі, що одразу рве з'єднання: запит нікуди не йде, як без інтернету.
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = proxy.local_addr().unwrap().port();
+        std::thread::spawn(move || proxy.incoming().for_each(drop));
+        let http = reqwest::Client::builder().proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}")).unwrap()).build().unwrap();
+        let ms = MsTokens { refresh_token: "r".into(), access_token: "a".into(), expires_at: 0, xuid: String::new() };
+        let mut acc = Account { id: "ms-x".into(), kind: "microsoft".into(), name: "x".into(), uuid: "x".into(), added: 0, ms: Some(ms), lia: None };
+        assert!(matches!(ensure_fresh(&http, "client", &mut acc).await, Err(crate::error::Error::Net(_))));
+        assert!(matches!(minecraft_token(&http, "a").await, Err(crate::error::Error::Net(_))));
+        assert_eq!(acc.ms.unwrap().access_token, "a");
     }
 
     #[test]

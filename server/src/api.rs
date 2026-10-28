@@ -1,7 +1,7 @@
 //! API ЛІЇ для лаунчера: друзі, статуси, збірки, стрічка. Акаунт — у account.rs.
 use crate::ygg::hex;
 use crate::{bad, forbidden, internal, not_found, ApiErr, App, R, S};
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -13,11 +13,13 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-pub const PACK_MAX: usize = 200 * 1024 * 1024;
+/// Більше однаково не пропустить Cloudflare (100 МБ на тіло запиту в безкоштовному плані).
+pub const PACK_MAX: usize = 100 * 1000 * 1000;
 const PACK_QUOTA: i64 = 1024 * 1024 * 1024;
 
 // ------------------------------------------------------------ користувачі й токени
@@ -264,8 +266,14 @@ pub struct WsQuery {
 
 pub async fn ws(st: S, Query(q): Query<WsQuery>, up: WebSocketUpgrade) -> R<Response> {
     let u = token_user(&st, &q.token).filter(|u| u.verified).ok_or_else(|| forbidden("Invalid token."))?;
+    // Кожне з'єднання тримає буфери; без межі один акаунт вичерпав би пам'ять тисячами з'єднань.
+    if st.sockets.lock().unwrap().get(&u.id).is_some_and(|l| l.len() >= 16) {
+        return Err(ApiErr(StatusCode::TOO_MANY_REQUESTS, "TooManyRequests", "забагато відкритих з'єднань".into()));
+    }
     let app = st.0.clone();
-    Ok(up.on_upgrade(move |sock| session_ws(app, u, sock)))
+    // Статус — кількасот байтів; типові для axum 64 МБ на повідомлення (16 МБ на кадр) дозволили б
+    // вичерпати пам'ять кількома повідомленнями.
+    Ok(up.max_message_size(64 * 1024).max_frame_size(64 * 1024).on_upgrade(move |sock| session_ws(app, u, q.token, sock)))
 }
 
 fn broadcast_presence(app: &App, u: &User) {
@@ -307,7 +315,7 @@ fn clean_presence(app: &App, u: &User, v: &Value) -> Value {
     out
 }
 
-async fn session_ws(app: Arc<App>, u: User, sock: WebSocket) {
+async fn session_ws(app: Arc<App>, u: User, token: String, sock: WebSocket) {
     let (mut tx, mut rx) = sock.split();
     let (out, mut inbox) = tokio::sync::mpsc::unbounded_channel::<String>();
     app.sockets.lock().unwrap().entry(u.id).or_default().push(out.clone());
@@ -329,7 +337,19 @@ async fn session_ws(app: Arc<App>, u: User, sock: WebSocket) {
             }
         }
     });
-    while let Some(Ok(m)) = rx.next().await {
+    // Сесію відкликали (вихід з усіх пристроїв, новий пароль, видалення акаунта) — статуси друзів більше не бачить.
+    let mut check = tokio::time::interval(Duration::from_secs(60));
+    loop {
+        let m = tokio::select! {
+            m = rx.next() => m,
+            _ = check.tick() => {
+                if token_user(&app, &token).is_none() {
+                    break;
+                }
+                continue;
+            }
+        };
+        let Some(Ok(m)) = m else { break };
         let Message::Text(t) = m else { continue };
         let Ok(v) = serde_json::from_str::<Value>(&t) else { continue };
         if v["type"] == "presence" {
@@ -387,13 +407,22 @@ struct PackMeta {
 }
 
 /// Читає modrinth.index.json з .mrpack: назва, версія гри, модлоадер.
-fn read_mrpack(bytes: &[u8]) -> R<PackMeta> {
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|_| bad("це не .mrpack"))?;
+fn read_mrpack(mut f: impl Read + Seek) -> R<PackMeta> {
+    // Кінець zip64 може оголосити мільйони записів, і вже розбір каталогу з'їдає сотні МБ пам'яті.
+    // Збірці вистачає звичайного zip (до 65535 файлів), тож записи кінця з ознаками zip64 не приймаємо.
+    let len = f.seek(SeekFrom::End(0)).map_err(internal)?;
+    f.seek(SeekFrom::Start(len.saturating_sub(68 * 1024))).map_err(internal)?;
+    let mut tail = vec![];
+    f.read_to_end(&mut tail).map_err(internal)?;
+    if tail.windows(22).any(|w| w.starts_with(b"PK\x05\x06") && (w[10..12] == [0xFF; 2] || w[12..16] == [0xFF; 4] || w[16..20] == [0xFF; 4])) {
+        return Err(bad("у збірці забагато файлів"));
+    }
+    let mut zip = zip::ZipArchive::new(f).map_err(|_| bad("це не .mrpack"))?;
     let mut s = String::new();
     zip.by_name("modrinth.index.json").map_err(|_| bad("у файлі немає modrinth.index.json"))?.take(4 * 1024 * 1024).read_to_string(&mut s).map_err(|_| bad("пошкоджений modrinth.index.json"))?;
     let v: Value = serde_json::from_str(&s).map_err(|_| bad("пошкоджений modrinth.index.json"))?;
     let deps = &v["dependencies"];
-    let mc = deps["minecraft"].as_str().ok_or_else(|| bad("не вказано версію Minecraft"))?.to_string();
+    let mc: String = deps["minecraft"].as_str().ok_or_else(|| bad("не вказано версію Minecraft"))?.chars().take(32).collect();
     let loader = ["fabric-loader", "quilt-loader", "forge", "neoforge"].iter().find(|l| deps[**l].is_string()).map(|l| l.trim_end_matches("-loader").to_string()).unwrap_or_else(|| "vanilla".into());
     let name: String = v["name"].as_str().unwrap_or("Збірка").chars().take(64).collect();
     Ok(PackMeta { name, mc, loader })
@@ -485,17 +514,39 @@ fn visibility(q: &HashMap<String, String>) -> &'static str {
     }
 }
 
-fn save_pack(app: &App, me: &User, id: &str, body: &[u8], replacing: i64) -> R<PackMeta> {
-    let meta = read_mrpack(body)?;
+/// Тимчасовий файл збірки прибирається сам: і при помилці, і коли запит обірвали посеред завантаження.
+struct TmpFile(std::path::PathBuf);
+
+impl Drop for TmpFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Приймає збірку в тимчасовий файл, а не в пам'ять (буває до 100 МБ), перевіряє й ставить на місце.
+/// Повертає метадані й розмір.
+async fn save_pack(app: &App, me: &User, id: &str, body: Body, replacing: i64) -> R<(PackMeta, i64)> {
+    let tmp = TmpFile(app.cfg.data.join("packs").join(format!("{}.tmp", hex(&rand::random::<[u8; 8]>()))));
+    let mut f = tokio::fs::File::create(&tmp.0).await.map_err(internal)?;
+    let mut size = 0;
+    let mut s = body.into_data_stream();
+    while let Some(chunk) = s.next().await {
+        let chunk = chunk.map_err(|_| bad("збірку не вдалося отримати"))?;
+        size += chunk.len();
+        if size > PACK_MAX {
+            return Err(bad("збірка завелика (до 100 МБ)"));
+        }
+        f.write_all(&chunk).await.map_err(internal)?;
+    }
+    f.flush().await.map_err(internal)?;
+    drop(f);
+    let meta = read_mrpack(std::fs::File::open(&tmp.0).map_err(internal)?)?;
     let used: i64 = app.db.lock().unwrap().query_row("SELECT coalesce(sum(size), 0) FROM packs WHERE owner = ?1", [me.id], |r| r.get(0)).map_err(internal)?;
-    if used - replacing + body.len() as i64 > PACK_QUOTA {
+    if used - replacing + size as i64 > PACK_QUOTA {
         return Err(bad("перевищено місце для збірок (1 ГБ)"));
     }
-    let path = pack_path(app, id);
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, body).map_err(internal)?;
-    std::fs::rename(&tmp, &path).map_err(internal)?;
-    Ok(meta)
+    std::fs::rename(&tmp.0, pack_path(app, id)).map_err(internal)?;
+    Ok((meta, size as i64))
 }
 
 fn notify_friends(app: &App, me: &User, msg: &Value) {
@@ -504,11 +555,12 @@ fn notify_friends(app: &App, me: &User, msg: &Value) {
     }
 }
 
-pub async fn pack_publish(st: S, h: HeaderMap, Query(q): Query<HashMap<String, String>>, body: Bytes) -> R<Json<Value>> {
+// Тіло — `Body`, а не `Bytes`: інакше axum читав би все тіло в пам'ять ще до перевірки входу.
+pub async fn pack_publish(st: S, h: HeaderMap, Query(q): Query<HashMap<String, String>>, body: Body) -> R<Json<Value>> {
     let me = auth(&st, &h)?;
     st.limit(format!("pack:{}", me.id), 30, Duration::from_secs(3600))?;
     let id = hex(&rand::random::<[u8; 6]>());
-    let meta = save_pack(&st, &me, &id, &body, 0)?;
+    let (meta, size) = save_pack(&st, &me, &id, body, 0).await?;
     let desc: String = q.get("description").map(|d| d.chars().take(500).collect()).unwrap_or_default();
     let now = crate::now();
     st.db
@@ -516,7 +568,7 @@ pub async fn pack_publish(st: S, h: HeaderMap, Query(q): Query<HashMap<String, S
         .unwrap()
         .execute(
             "INSERT INTO packs (id, owner, name, description, mc_version, loader, visibility, version, size, created, updated) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9, ?9)",
-            params![id, me.id, meta.name, desc, meta.mc, meta.loader, visibility(&q), body.len() as i64, now],
+            params![id, me.id, meta.name, desc, meta.mc, meta.loader, visibility(&q), size, now],
         )
         .map_err(internal)?;
     event(&st, me.id, "pack_published", Some(&id), json!({ "name": meta.name, "version": 1 }));
@@ -524,20 +576,21 @@ pub async fn pack_publish(st: S, h: HeaderMap, Query(q): Query<HashMap<String, S
     pack_get_inner(&st, &me, &id)
 }
 
-pub async fn pack_update(st: S, h: HeaderMap, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>, body: Bytes) -> R<Json<Value>> {
+pub async fn pack_update(st: S, h: HeaderMap, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>, body: Body) -> R<Json<Value>> {
     let me = auth(&st, &h)?;
     let (owner, _) = pack_owner(&st, &id)?;
     if owner != me.id {
         return Err(forbidden("це не ваша збірка"));
     }
+    st.limit(format!("pack:{}", me.id), 30, Duration::from_secs(3600))?;
     let old: i64 = st.db.lock().unwrap().query_row("SELECT size FROM packs WHERE id = ?1", [&id], |r| r.get(0)).map_err(internal)?;
-    let meta = save_pack(&st, &me, &id, &body, old)?;
+    let (meta, size) = save_pack(&st, &me, &id, body, old).await?;
     let version: i64 = {
         let db = st.db.lock().unwrap();
         db.execute(
             "UPDATE packs SET name = ?1, mc_version = ?2, loader = ?3, size = ?4, version = version + 1, updated = ?5,
                               visibility = coalesce(?6, visibility), description = coalesce(?7, description) WHERE id = ?8",
-            params![meta.name, meta.mc, meta.loader, body.len() as i64, crate::now(), q.get("visibility").map(|_| visibility(&q)), q.get("description"), id],
+            params![meta.name, meta.mc, meta.loader, size, crate::now(), q.get("visibility").map(|_| visibility(&q)), q.get("description").map(|d| d.chars().take(500).collect::<String>()), id],
         )
         .map_err(internal)?;
         db.query_row("SELECT version FROM packs WHERE id = ?1", [&id], |r| r.get(0)).map_err(internal)?
@@ -589,8 +642,16 @@ pub async fn pack_file(st: S, h: HeaderMap, Path(id): Path<String>) -> R<Respons
     if !pack_visible(&st, &me, owner, &vis) {
         return Err(not_found());
     }
-    let bytes = tokio::fs::read(pack_path(&st, &id)).await.map_err(|_| not_found())?;
-    Ok(([(header::CONTENT_TYPE, "application/x-modrinth-modpack+zip")], bytes).into_response())
+    let f = tokio::fs::File::open(pack_path(&st, &id)).await.map_err(|_| not_found())?;
+    let len = f.metadata().await.map_err(internal)?.len();
+    // Потоком, а не цілим файлом у пам'яті: кілька одночасних завантажень великої збірки вичерпали б пам'ять сервера.
+    let stream = futures::stream::try_unfold(f, |mut f| async move {
+        let mut buf = vec![0u8; 64 * 1024];
+        let n = f.read(&mut buf).await?;
+        buf.truncate(n);
+        Ok::<_, std::io::Error>((n > 0).then(|| (Bytes::from(buf), f)))
+    });
+    Ok(([(header::CONTENT_TYPE, "application/x-modrinth-modpack+zip".to_string()), (header::CONTENT_LENGTH, len.to_string())], Body::from_stream(stream)).into_response())
 }
 
 pub async fn pack_subscribe(st: S, h: HeaderMap, Path(id): Path<String>) -> R<StatusCode> {
@@ -640,4 +701,28 @@ pub async fn feed(st: S, h: HeaderMap) -> R<Json<Value>> {
         out.push(json!({ "id": id, "user": user, "kind": kind, "pack": pack, "data": serde_json::from_str::<Value>(&data).unwrap_or_default(), "created": created }));
     }
     Ok(Json(json!(out)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Cursor, Write};
+
+    fn mrpack(mc: &str) -> Vec<u8> {
+        let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        z.start_file("modrinth.index.json", zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(serde_json::json!({ "name": "Тест", "dependencies": { "minecraft": mc, "fabric-loader": "0.16.0" } }).to_string().as_bytes()).unwrap();
+        z.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn mrpack_meta() {
+        let m = super::read_mrpack(Cursor::new(mrpack("1.21.1"))).unwrap();
+        assert_eq!((m.name.as_str(), m.mc.as_str(), m.loader.as_str()), ("Тест", "1.21.1", "fabric"));
+        assert_eq!(super::read_mrpack(Cursor::new(mrpack(&"1".repeat(100_000)))).unwrap().mc.len(), 32);
+        // Кінець архіву з ознакою zip64 (кількість записів 0xFFFF) — відмова ще до розбору каталогу.
+        let mut b = mrpack("1.21.1");
+        let n = b.len();
+        b[n - 12..n - 10].copy_from_slice(&[0xFF, 0xFF]);
+        assert_eq!(super::read_mrpack(Cursor::new(b)).err().unwrap().2, "у збірці забагато файлів");
+    }
 }

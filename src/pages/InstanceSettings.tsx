@@ -35,6 +35,10 @@ export function InstanceSettings({ inst }: { inst: Instance }) {
   const total = info?.totalMemoryMb ?? 8192;
   const maxMem = Math.max(2048, Math.floor((total - 1024) / 512) * 512);
   const memory = inst.memoryMb ?? settings?.memoryMb ?? 2048;
+  // Повзунок — локально, як у загальних налаштуваннях: збереження на кожен крок смикало повзунок
+  // назад і слало паралельні записи, з яких останнім міг лягти не останній.
+  const [mem, setMem] = useState(memory);
+  useEffect(() => setMem(memory), [memory]);
 
   return (
     <div className="settings-cols">
@@ -47,7 +51,8 @@ export function InstanceSettings({ inst }: { inst: Instance }) {
             value={name}
             maxLength={48}
             onChange={(e) => setName(e.target.value)}
-            onBlur={() => name.trim() && name !== inst.name && patch(inst.id, { name })}
+            // Порожню назву ядро не прийме — повертаємо поточну, щоб поле не брехало.
+            onBlur={() => (name.trim() ? name !== inst.name && patch(inst.id, { name }) : setName(inst.name))}
             onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
           />
         </div>
@@ -92,9 +97,14 @@ export function InstanceSettings({ inst }: { inst: Instance }) {
         </label>
         {inst.memoryMb != null && (
           <div className="mem">
-            <Slider value={memory} min={1024} max={maxMem} step={512} onChange={(v) => patch(inst.id, { memoryMb: v })} />
-            <b className="mono">{gb(memory)}</b>
+            <Slider value={mem} min={1024} max={maxMem} step={512} onChange={setMem} />
+            <b className="mono">{gb(mem)}</b>
           </div>
+        )}
+        {inst.memoryMb != null && mem !== memory && (
+          <button className="btn sm primary" style={{ alignSelf: "flex-start" }} onClick={() => patch(inst.id, { memoryMb: mem })}>
+            {t("common.save")}
+          </button>
         )}
 
         <h3 style={{ marginTop: 10 }}>{t("iset.java")}</h3>

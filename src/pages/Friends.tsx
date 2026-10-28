@@ -155,11 +155,15 @@ function AddFriend() {
           ) : (
             <button
               className="btn sm"
-              onClick={async () => {
-                await api.lia("POST", `/api/friends/${u.name}`).catch(fail);
-                toast("success", t("lia.request_sent", { name: u.name }));
-                loadFriends();
-              }}
+              onClick={() =>
+                api
+                  .lia("POST", `/api/friends/${u.name}`)
+                  .then(() => {
+                    toast("success", t("lia.request_sent", { name: u.name }));
+                    loadFriends();
+                  })
+                  .catch(fail)
+              }
             >
               <UserPlus size={14} />
               {t("lia.add")}

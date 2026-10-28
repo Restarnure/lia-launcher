@@ -151,7 +151,9 @@ pub fn builtin() -> Featured {
 fn valid(f: &Featured) -> bool {
     let host_ok = !f.address.is_empty() && f.address.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
     let mods_ok = f.mods.iter().all(|m| !m.is_empty() && m.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
-    host_ok && mods_ok && crate::mojang::install::check_id(&f.mc_version).is_ok() && LOADERS.contains(&f.loader.as_str()) && f.id == "shotam"
+    // Назва стає назвою збірки: з недопустимою кнопка «Грати» не створила б її.
+    let name_ok = crate::instances::validate_name(&f.name).is_ok();
+    host_ok && mods_ok && name_ok && crate::mojang::install::check_id(&f.mc_version).is_ok() && LOADERS.contains(&f.loader.as_str()) && f.id == "shotam"
 }
 
 pub async fn featured(ctx: &Ctx) -> Featured {
@@ -269,5 +271,7 @@ mod tests {
         super::varint(-1, &mut v);
         assert_eq!(v, vec![0xff, 0xff, 0xff, 0xff, 0x0f]);
         assert!(super::valid(&super::builtin()));
+        let long = super::Featured { name: "S".repeat(49), ..super::builtin() };
+        assert!(!super::valid(&long));
     }
 }

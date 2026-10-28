@@ -2,12 +2,13 @@
 # через openssl), друзі, статуси (WebSocket), ретранслятор, збірки.
 # Локально: запустити lia-server з LIA_HTTP=127.0.0.1:18080 LIA_PLAY_DOMAIN=play.localhost LIA_MAIL_LOG=1,
 # вивід сервера — у файл, і `LIA_SERVER_LOG=<файл> python e2e.py` (коди з листів читаються з логу).
+# Інший порт ретранслятора — LIA_RELAY_PORT однаковий для сервера й тесту.
 # Бойовий: LIA_B=https://lia.starnure.dev SKIP_RELAY=1 python e2e.py (створює тестові акаунти — приберіть після).
 # Ліміт реєстрацій — 5 на годину з IP: між прогонами перезапускайте сервер.
 import base64, hashlib, io, json, os, socket, struct, subprocess, sys, threading, time, urllib.request, zipfile
 
 B = os.environ.get("LIA_B", "http://127.0.0.1:18080")
-RELAY = (os.environ.get("LIA_RELAY_HOST", "127.0.0.1"), 25570)
+RELAY = (os.environ.get("LIA_RELAY_HOST", "127.0.0.1"), int(os.environ.get("LIA_RELAY_PORT", "25570")))
 PLAY = os.environ.get("LIA_PLAY", "play.localhost")
 HERE = __import__("tempfile").mkdtemp(prefix="lia-e2e-")  # pub.pem, підпис — для перевірки openssl
 run = str(int(time.time()))[-5:]
@@ -139,7 +140,7 @@ def ws_connect(token):
         host = B.split("//")[1]
         sock = ssl.create_default_context().wrap_socket(socket.create_connection((host, 443)), server_hostname=host)
     else:
-        sock = socket.create_connection(("127.0.0.1", 18080))
+        sock = socket.create_connection(("127.0.0.1", int(B.rsplit(":", 1)[1])))
     key = base64.b64encode(os.urandom(16)).decode()
     sock.sendall(f"GET /api/ws?token={token} HTTP/1.1\r\nHost: {B.split('//')[1]}\r\nUser-Agent: Mozilla/5.0 LIA\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n".encode())
     resp = b""
@@ -192,7 +193,7 @@ ctl.sendall(b"\x00LIA" + json.dumps({"kind": "host", "token": ta}).encode() + b"
 f = ctl.makefile("r")
 hello = json.loads(f.readline())
 code = hello["code"]
-assert hello["address"] == f"{code}.{PLAY}:25570", hello
+assert hello["address"] == f"{code}.{PLAY}:{RELAY[1]}", hello
 ws_send(wa, json.dumps({"type": "presence", "state": "playing", "game": {}, "world": {"code": code}}))
 m = ws_recv(wb)
 assert m["presence"]["world"]["address"] == hello["address"], m
@@ -316,6 +317,7 @@ if me0["mailEnabled"]:
     assert req("POST", "/api/password/forgot", {"login": "nobody" + run}, token=None)[0] == 204  # не підказуємо, чи є акаунт
     code = mail_code(ec, n)
     assert req("POST", "/api/password/reset", {"login": ec, "code": "111111", "password": pw(5)})[0] == 400
+    assert req("POST", "/api/password/reset", {"login": ec, "code": code, "password": "password1"})[0] == 400  # слабкий пароль не «спалює» код
     assert req("POST", "/api/password/reset", {"login": ec, "code": code, "password": pw(5)})[0] == 204
     assert req("GET", "/api/me", token=tc)[0] == 401
     s, l3 = req("POST", "/api/login", {"name": ec, "password": pw(5)})

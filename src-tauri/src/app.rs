@@ -72,11 +72,45 @@ impl AppState {
         s.save()
     }
 
-    /// Дозволяє показувати в інтерфейсі файли з теки даних (іконки, скріншоти) через asset://.
+    /// Дозволяє показувати в інтерфейсі файли збірок (іконки, світи, скріншоти) через asset://.
+    /// Лише instances/: тека даних може бути будь-де (хоч корінь диска), а поруч лежать акаунти.
     pub fn allow_assets(&self) {
-        let root = self.ctx().paths.root;
-        let _ = self.app.asset_protocol_scope().allow_directory(&root, true);
+        let dir = self.ctx().paths.instances();
+        let _ = self.app.asset_protocol_scope().allow_directory(&dir, true);
     }
+}
+
+/// Збірка зайнята (готується до запуску, відновлюється, оновлюється): поки живе, її не запустити
+/// вдруге, не відновити й не видалити.
+struct Busy<'a>(&'a Mutex<HashSet<String>>, String);
+
+impl<'a> Busy<'a> {
+    fn new(set: &'a Mutex<HashSet<String>>, id: &str) -> Result<Self> {
+        if !set.lock().unwrap().insert(id.to_string()) {
+            return Err(err("busy", "збірка зайнята іншою операцією"));
+        }
+        Ok(Busy(set, id.to_string()))
+    }
+}
+
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().remove(&self.1);
+    }
+}
+
+/// Змінює збірку, перечитавши її з диска: поки йшло завантаження, її могли змінити в налаштуваннях.
+fn edit_instance(paths: &Paths, id: &str, f: impl FnOnce(&mut Instance)) -> Result<()> {
+    let mut i = instances::get(paths, id)?;
+    f(&mut i);
+    instances::save(paths, &i)
+}
+
+/// Шляхи даних, якщо `id` — справжня збірка: інакше `..\..` чи абсолютний шлях вели б у чужу `.minecraft`.
+fn inst_paths(state: &AppState, id: &str) -> Result<Paths> {
+    let paths = state.ctx().paths;
+    instances::get(&paths, id)?;
+    Ok(paths)
 }
 
 /// Старт: підхопити ігри, що працюють з минулого сеансу, і прибрати тимчасові файли.
@@ -132,10 +166,12 @@ pub async fn open_path(state: S<'_>, path: String, reveal: Option<bool>) -> Resu
     if !allowed || path.contains("..") {
         return Err(err("invalid", "шлях поза теками лаунчера"));
     }
-    if !p.exists() {
+    let reveal = reveal.unwrap_or(false);
+    // Теку створюємо (logs/ немає до першого запуску), а на місці зниклого скріншота — ні.
+    if !p.exists() && !reveal {
         std::fs::create_dir_all(&p)?;
     }
-    let r = if reveal.unwrap_or(false) { state.app.opener().reveal_item_in_dir(&p) } else { state.app.opener().open_path(path, None::<&str>) };
+    let r = if reveal { state.app.opener().reveal_item_in_dir(&p) } else { state.app.opener().open_path(path, None::<&str>) };
     r.map_err(|e| err("open", e.to_string()))
 }
 
@@ -279,7 +315,7 @@ pub async fn instance_update(state: S<'_>, id: String, patch: InstancePatch) -> 
         reinstall = true;
     }
     if reinstall {
-        if launch::get(&id).is_some() {
+        if launch::get(&id).is_some() || state.preparing.lock().unwrap().contains(&id) {
             return Err(err("busy", "закрийте гру перед зміною версії"));
         }
         i.version_id = (i.loader == "vanilla").then(|| i.mc_version.clone());
@@ -338,6 +374,11 @@ pub async fn instance_delete(state: S<'_>, id: String) -> Result<()> {
 
 #[tauri::command]
 pub async fn instance_duplicate(state: S<'_>, id: String, suffix: String) -> Result<Instance> {
+    // Копія взяла б і .running (лаунчер після перезапуску вважав би запущеними обидві),
+    // а відкритий світ тримає session.lock — копіювання обірвалось би посередині.
+    if launch::get(&id).is_some() {
+        return Err(err("already_running", "закрийте гру, щоб скопіювати збірку"));
+    }
     let paths = state.ctx().paths;
     let inst = tokio::task::spawn_blocking(move || instances::duplicate(&paths, &id, &suffix)).await.map_err(|e| err("io", e.to_string()))??;
     state.app.emit("instances-changed", ()).ok();
@@ -346,7 +387,7 @@ pub async fn instance_duplicate(state: S<'_>, id: String, suffix: String) -> Res
 
 #[tauri::command]
 pub async fn instance_folder(state: S<'_>, id: String, sub: Option<String>) -> Result<String> {
-    let p = content::game_path(&state.ctx().paths, &id, sub.as_deref().unwrap_or(""))?;
+    let p = content::game_path(&inst_paths(&state, &id)?, &id, sub.as_deref().unwrap_or(""))?;
     Ok(p.display().to_string())
 }
 
@@ -369,14 +410,18 @@ pub async fn instance_launch(state: S<'_>, id: String, server: Option<ServerTarg
 #[tauri::command]
 pub async fn instance_repair(state: S<'_>, id: String) -> Result<()> {
     let ctx = state.ctx();
-    let mut inst = instances::get(&ctx.paths, &id)?;
+    let inst = instances::get(&ctx.paths, &id)?;
+    // Файли запущеної гри зайняті, а паралельний запуск качав би ті самі файли.
+    if launch::get(&id).is_some() {
+        return Err(err("already_running", "закрийте гру перед відновленням"));
+    }
+    let _busy = Busy::new(&state.preparing, &id)?;
     let task = ctx.task_for(inst.name.clone(), &inst.id);
     let r = async {
         let vid = loaders::ensure(&ctx, &inst.loader, &inst.mc_version, inst.loader_version.as_deref(), None, &task).await?;
         let prep = install::prepare(&ctx, &vid, &task, true).await?;
         java::ensure_runtime(&ctx, &prep.json.java_component(), &task, true).await?;
-        inst.version_id = Some(vid);
-        instances::save(&ctx.paths, &inst)
+        edit_instance(&ctx.paths, &id, |i| i.version_id = Some(vid))
     }
     .await;
     task.finish(&r);
@@ -422,21 +467,18 @@ async fn selected_account(state: &AppState) -> Result<Account> {
 /// (ціною офіційних онлайн-серверів у цьому запуску). Офлайн-нік з ЛІЯ ID входить через ЛІЮ завжди.
 pub async fn launch_instance(state: Arc<AppState>, id: String, server: Option<(String, u16)>, world: Option<String>, friends: bool) -> Result<()> {
     let ctx = state.ctx();
-    let mut inst = instances::get(&ctx.paths, &id)?;
+    let inst = instances::get(&ctx.paths, &id)?;
     if launch::get(&id).is_some() {
         return Err(err("already_running", "ця збірка вже запущена"));
     }
-    if !state.preparing.lock().unwrap().insert(id.clone()) {
-        return Err(err("busy", "збірка вже готується до запуску"));
-    }
+    let busy = Busy::new(&state.preparing, &id)?;
     let settings = state.settings();
     let task = ctx.task_for(inst.name.clone(), &inst.id);
     let r: Result<()> = async {
         let account = selected_account(&state).await?;
         let vid = loaders::ensure(&ctx, &inst.loader, &inst.mc_version, inst.loader_version.as_deref(), inst.version_id.as_deref(), &task).await?;
         if inst.version_id.as_deref() != Some(&vid) {
-            inst.version_id = Some(vid.clone());
-            instances::save(&ctx.paths, &inst)?;
+            edit_instance(&ctx.paths, &id, |i| i.version_id = Some(vid.clone()))?;
         }
         let prep = install::prepare(&ctx, &vid, &task, false).await?;
         let java = match inst.java_path.clone().or(settings.java_path.clone()) {
@@ -472,9 +514,11 @@ pub async fn launch_instance(state: Arc<AppState>, id: String, server: Option<(S
         }
         let mut via_lia = false;
         if let Some(s) = lia_session.as_ref().filter(|_| account.kind == "offline" || (friends && account.kind == "microsoft")) {
-            match crate::lia::game_session(&state.http, s, &account).await {
-                Ok((token, uuid, name)) => {
-                    jvm_args.splice(0..0, crate::lia::jvm_args(&crate::lia::injector(&ctx).await?));
+            // Без authlib-injector (GitHub недоступний) офлайн-нік теж грає, просто не через ЛІЮ.
+            let lia = async { Ok::<_, Error>((crate::lia::injector(&ctx).await?, crate::lia::game_session(&state.http, s, &account).await?)) }.await;
+            match lia {
+                Ok((jar, (token, uuid, name))) => {
+                    jvm_args.splice(0..0, crate::lia::jvm_args(&jar));
                     auth.token = token;
                     auth.uuid = uuid;
                     auth.name = name;
@@ -522,13 +566,12 @@ pub async fn launch_instance(state: Arc<AppState>, id: String, server: Option<(S
                 }
             }
         })?;
-        inst.last_played = Some(util::now_ms());
-        instances::save(&ctx.paths, &inst)?;
+        edit_instance(&ctx.paths, &id, |i| i.last_played = Some(util::now_ms()))?;
         state.update_settings(|s| s.last_instance = Some(id.clone()))?;
         Ok(())
     }
     .await;
-    state.preparing.lock().unwrap().remove(&id);
+    drop(busy);
     task.finish(&r);
     if r.is_ok() {
         state.app.emit("instances-changed", ()).ok();
@@ -632,24 +675,24 @@ async fn modrinth_outdated(ctx: &Ctx, inst: &Instance, project_id: &str) -> bool
 #[tauri::command]
 pub async fn content_list(state: S<'_>, id: String, kind: String) -> Result<Vec<content::Item>> {
     let kind = Kind::parse(&kind)?;
-    let paths = state.ctx().paths;
+    let paths = inst_paths(&state, &id)?;
     Ok(tokio::task::spawn_blocking(move || content::list(&paths, &id, kind)).await.unwrap_or_default())
 }
 
 #[tauri::command]
 pub async fn content_toggle(state: S<'_>, id: String, kind: String, file: String) -> Result<String> {
-    content::toggle(&state.ctx().paths, &id, Kind::parse(&kind)?, &file)
+    content::toggle(&inst_paths(&state, &id)?, &id, Kind::parse(&kind)?, &file)
 }
 
 #[tauri::command]
 pub async fn content_remove(state: S<'_>, id: String, kind: String, file: String) -> Result<()> {
-    content::remove(&state.ctx().paths, &id, Kind::parse(&kind)?, &file)
+    content::remove(&inst_paths(&state, &id)?, &id, Kind::parse(&kind)?, &file)
 }
 
 #[tauri::command]
 pub async fn content_add(state: S<'_>, id: String, kind: String, files: Vec<String>) -> Result<usize> {
     let files: Vec<PathBuf> = files.into_iter().map(PathBuf::from).collect();
-    content::add_files(&state.ctx().paths, &id, Kind::parse(&kind)?, &files)
+    content::add_files(&inst_paths(&state, &id)?, &id, Kind::parse(&kind)?, &files)
 }
 
 /// Дізнається на Modrinth, що за файли лежать у збірці (назви, іконки) — для доданих вручну.
@@ -657,6 +700,7 @@ pub async fn content_add(state: S<'_>, id: String, kind: String, files: Vec<Stri
 pub async fn content_identify(state: S<'_>, id: String, kind: String) -> Result<Vec<content::Item>> {
     let ctx = state.ctx();
     let kind = Kind::parse(&kind)?;
+    instances::get(&ctx.paths, &id)?;
     let items = content::list(&ctx.paths, &id, kind);
     let unknown: Vec<String> = items.iter().filter(|i| i.project_id.is_none() && !i.is_dir).map(|i| i.file.clone()).collect();
     if unknown.is_empty() {
@@ -754,13 +798,13 @@ pub async fn content_update(state: S<'_>, id: String, kind: String, file: String
 
 #[tauri::command]
 pub async fn worlds_list(state: S<'_>, id: String) -> Result<Vec<content::World>> {
-    let paths = state.ctx().paths;
+    let paths = inst_paths(&state, &id)?;
     Ok(tokio::task::spawn_blocking(move || content::worlds(&paths, &id)).await.unwrap_or_default())
 }
 
 #[tauri::command]
 pub async fn screenshots_list(state: S<'_>, id: String) -> Result<Vec<content::Shot>> {
-    Ok(content::screenshots(&state.ctx().paths, &id))
+    Ok(content::screenshots(&inst_paths(&state, &id)?, &id))
 }
 
 /// Видалення світу чи скріншота — у кошик.
@@ -769,7 +813,7 @@ pub async fn game_file_trash(state: S<'_>, id: String, rel: String) -> Result<()
     if rel.trim().is_empty() {
         return Err(err("invalid", "порожній шлях"));
     }
-    let p = content::game_path(&state.ctx().paths, &id, &rel)?;
+    let p = content::game_path(&inst_paths(&state, &id)?, &id, &rel)?;
     trash::delete(&p).map_err(|e| err("io", e.to_string()))
 }
 
@@ -1284,6 +1328,8 @@ pub async fn lia_update_pack(state: S<'_>, instance_id: String) -> Result<Instan
     if launch::get(&instance_id).is_some() {
         return Err(err("already_running", "закрийте гру перед оновленням"));
     }
+    // Поки моди в запасній теці, збірку не запустити й не видалити.
+    let _busy = Busy::new(&state.preparing, &instance_id)?;
     let (meta, tmp) = lia_download_pack(&state, &ctx, &pack).await?;
     let task = ctx.task_for(inst.name.clone(), &inst.id);
     // Старі моди — у запасну теку: якщо оновлення обірветься, збірка не лишиться без модів.
@@ -1323,6 +1369,11 @@ pub async fn lia_share_world(state: S<'_>, instance_id: String, port: u16) -> Re
         app.emit("lia-share-ended", json!({ "instanceId": id })).ok();
     })
     .await?;
+    // Гра закрилась, поки відкривали світ: її on_exit уже відпрацював, тож закриваємо світ тут.
+    if launch::get(&instance_id).is_none() {
+        crate::lia::unshare(&instance_id);
+        return Err(Error::Cancelled);
+    }
     // Без входу через ЛІЮ світ перевіряє гостей через Mojang — піратам туди не зайти.
     Ok(json!({ "code": code, "address": address, "licensedOnly": !crate::lia::is_lia_game(&instance_id) }))
 }
@@ -1331,4 +1382,39 @@ pub async fn lia_share_world(state: S<'_>, instance_id: String, port: u16) -> Re
 pub async fn lia_unshare(instance_id: String) -> Result<()> {
     crate::lia::unshare(&instance_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn busy_guard() {
+        let set = Mutex::new(HashSet::new());
+        let b = Busy::new(&set, "a").unwrap();
+        assert!(Busy::new(&set, "a").is_err());
+        assert!(Busy::new(&set, "b").is_ok());
+        drop(b);
+        assert!(Busy::new(&set, "a").is_ok());
+        assert!(set.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn instance_edits_and_ids() {
+        let root = std::env::temp_dir().join(format!("lia-app-test-{}", std::process::id()));
+        let paths = Paths::new(root.clone());
+        let inst = instances::create(&paths, NewInstance { name: "Тест".into(), mc_version: "1.21.4".into(), loader: "vanilla".into(), loader_version: None, icon: None }).unwrap();
+        // Поки гра готувалась до запуску, збірку перейменували — запуск не повертає стару назву.
+        let mut renamed = instances::get(&paths, &inst.id).unwrap();
+        renamed.name = "Нова".into();
+        instances::save(&paths, &renamed).unwrap();
+        edit_instance(&paths, &inst.id, |i| i.last_played = Some(5)).unwrap();
+        let i = instances::get(&paths, &inst.id).unwrap();
+        assert_eq!((i.name.as_str(), i.last_played), ("Нова", Some(5)));
+        // id з інтерфейсу не виводить за instances/ (у чужу .minecraft).
+        for bad in ["..", "../..", "..\\..", "C:\\Users", "/etc", "a/../..", ""] {
+            assert!(instances::get(&paths, bad).is_err(), "{bad}");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

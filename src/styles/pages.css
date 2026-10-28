@@ -541,6 +541,19 @@
   align-items: center;
   gap: 16px;
   margin-bottom: 18px;
+  /* Вузьке вікно чи масштаб 125%: кнопки разом переносяться під назву, а не обрізають «Грати». */
+  flex-wrap: wrap;
+}
+
+.inst-head > .grow {
+  flex-basis: 220px;
+}
+
+.inst-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-left: auto;
 }
 
 .inst-art {

@@ -129,7 +129,7 @@ export function dismissToast(id: number) {
 }
 
 // Коди, для яких технічна деталь допомагає (який файл, яка відповідь сервера).
-const DETAILED = new Set(["net", "http", "io", "json", "zip", "integrity", "loader_install", "loader_broken", "java_broken", "java_unavailable", "ms_oauth", "ms_xbox", "ms_mc", "ms_app_not_approved", "skin_upload", "invalid_modpack", "unknown"]);
+const DETAILED = new Set(["net", "http", "io", "json", "zip", "integrity", "loader_install", "loader_broken", "java_broken", "java_unavailable", "ms_oauth", "ms_xbox", "ms_mc", "ms_app_not_approved", "skin_upload", "invalid_modpack", "open", "crypto", "unknown"]);
 
 /** Показує помилку з ядра людською мовою (скасування — мовчки). */
 export function fail(e: unknown, title?: string) {

@@ -2,9 +2,10 @@ import { useMemo } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { ArrowUpCircle, RefreshCw } from "lucide-react";
+import { api } from "../lib/api";
 import { bytes } from "../lib/format";
 import { t } from "../lib/i18n";
-import { setState, useStore } from "../lib/store";
+import { fail, setState, useStore } from "../lib/store";
 import { checkForUpdate, installUpdate } from "../lib/updater";
 import { Modal, Progress } from "./ui";
 
@@ -54,7 +55,18 @@ export function UpdateModal() {
       }
     >
       <p className="faint">{t("upd.current", { v: version })}</p>
-      <div className="prose selectable update-notes" dangerouslySetInnerHTML={{ __html: notes }} />
+      <div
+        className="prose selectable update-notes"
+        dangerouslySetInnerHTML={{ __html: notes }}
+        onClick={(e) => {
+          // Посилання — у браузері: інакше вікно лаунчера перейде на чужу сторінку без дороги назад.
+          const a = (e.target as HTMLElement).closest("a");
+          if (a) {
+            e.preventDefault();
+            if (a.href) api.openUrl(a.href).catch(fail);
+          }
+        }}
+      />
       {running && <p className="hint">{t("upd.game_note")}</p>}
       {st.status === "downloading" && (
         <div className="field">

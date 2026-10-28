@@ -13,7 +13,7 @@ interface LiaState {
   online: boolean;
   friends: LiaFriends | null;
   /** Відкриті друзям світи: збірка → адреса. */
-  shares: Record<string, { code: string; address: string; licensedOnly: boolean }>;
+  shares: Record<string, { code: string; address: string; licensedOnly: boolean; port: number; since: number }>;
   /** Лічильник змін стрічки й збірок — сторінки перезавантажують дані, коли він росте. */
   rev: number;
 }
@@ -121,8 +121,11 @@ export async function refreshLia(reconnect = false) {
     }
   }
   const fresh = await api.liaSession().catch(() => null);
-  const changed = fresh?.token !== st.session?.token || !!me?.emailVerified !== !!st.me?.emailVerified;
-  set({ session: fresh, me: fresh ? me : null, ...(fresh ? {} : { friends: null }) });
+  const same = fresh?.token === st.session?.token;
+  const changed = !same || !!me?.emailVerified !== !!st.me?.emailVerified;
+  // Та сама сесія — той самий об'єкт: інакше сторінки, що від неї залежать, перезавантажуються
+  // на кожну спробу перепідключення (без мережі — помилка кожні ~10 с).
+  set({ session: same ? st.session : fresh, me: fresh ? me : null, ...(fresh ? {} : { friends: null }) });
   if (changed || reconnect) {
     connect();
     loadFriends();
@@ -136,7 +139,7 @@ async function shareWorld(instanceId: string, port: number) {
   if (!ready()) return;
   try {
     const r = await api.liaShareWorld(instanceId, port);
-    set({ shares: { ...st.shares, [instanceId]: r } });
+    set({ shares: { ...st.shares, [instanceId]: { ...r, port, since: Date.now() } } });
     sendPresence();
     toast("success", t("lia.world_shared"), r.licensedOnly ? t("lia.world_shared_licensed") : t("lia.world_shared_text"));
   } catch (e) {
@@ -169,7 +172,15 @@ export async function initLia() {
     // Стан запущених збірок оновлюється в основному сховищі тим самим подієм — чекаємо його.
     setTimeout(sendPresence, 50);
   });
-  await listen<{ instanceId: string }>("lia-share-ended", ({ payload }) => unshare(payload.instanceId));
+  await listen<{ instanceId: string }>("lia-share-ended", ({ payload }) => {
+    const s = st.shares[payload.instanceId];
+    unshare(payload.instanceId);
+    if (!s) return;
+    // Обірвався зв'язок з ретранслятором (перезапуск сервера, мережа), а світ ще відкритий — відкриваємо знову.
+    // Світ, що обірвався одразу після відкриття, не перевідкриваємо: інакше вийшло б коло.
+    if (Date.now() - s.since > 30_000 && getState().running[payload.instanceId]) setTimeout(() => shareWorld(payload.instanceId, s.port), 3000);
+    else toast("info", t("lia.share_lost"));
+  });
   await listen("lia-session", () => refreshLia());
   await listen<{ message: string }>("lia-warning", ({ payload }) => toast("info", t("lia.warning"), payload.message));
   await refreshLia();

@@ -204,7 +204,7 @@ function FeaturedServer() {
       </div>
       <div className="featured-actions">
         {task ? (
-          <button className="play busy" onClick={() => api.taskCancel(task.id)}>
+          <button className="play busy" onClick={(e) => e.detail < 2 && api.taskCancel(task.id)} title={t("common.cancel")}>
             <div className={`fill ${task.total > 0 ? "" : "indeterminate"}`} style={{ width: `${pct}%` }} />
             <span>{task.total > 0 ? `${stageLabel(task.stage)} · ${pct}%` : stageLabel(task.stage)}</span>
           </button>

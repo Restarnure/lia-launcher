@@ -155,14 +155,16 @@ pub async fn probe(java: &Path) -> Result<String> {
     let cli = java.with_file_name(if cfg!(windows) { "java.exe" } else { "java" });
     let bin = if cli.exists() { cli } else { java.to_path_buf() };
     let mut cmd = tokio::process::Command::new(&bin);
-    cmd.arg("-version");
+    cmd.arg("-version").kill_on_drop(true);
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
-    let out = cmd.output().await.ctx(|| bin.display().to_string())?;
+    let silent = || err("java_broken", format!("{} не відповідає на -version", bin.display()));
+    // Замість Java можуть вибрати будь-яку програму, яка сама не завершиться.
+    let out = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await.map_err(|_| silent())?.ctx(|| bin.display().to_string())?;
     let text = String::from_utf8_lossy(&out.stderr).to_string() + &String::from_utf8_lossy(&out.stdout);
     let first = text.lines().next().unwrap_or("").trim().to_string();
     if first.is_empty() {
-        return Err(err("java_broken", format!("{} не відповідає на -version", bin.display())));
+        return Err(silent());
     }
     Ok(first)
 }

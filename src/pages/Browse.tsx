@@ -103,19 +103,16 @@ export function Browse({ type: initialType, instanceId }: { type?: ProjectType; 
     if (instanceId) setTarget(instanceId);
   }, [initialType, instanceId]);
 
-  useEffect(() => setCats([]), [type]);
+  // Новий порожній масив щоразу перезапустив би пошук удруге.
+  useEffect(() => setCats((c) => (c.length ? [] : c)), [type]);
 
+  // Від збірки — лише версія й модлоадер: об'єкт збірки оновлюється з кожним instances-changed
+  // (запуск чи вихід із гри), і пошук скидався б на початок.
+  const gameVersion = useTarget ? inst!.mcVersion : null;
+  const loader = useTarget && type === "mod" ? inst!.loader : null;
   const params = useMemo(
-    () => ({
-      query: q,
-      projectType: type,
-      gameVersion: useTarget ? inst!.mcVersion : null,
-      loader: useTarget && type === "mod" ? inst!.loader : null,
-      categories: cats,
-      sort,
-      limit: 20,
-    }),
-    [q, type, useTarget, inst, cats, sort],
+    () => ({ query: q, projectType: type, gameVersion, loader, categories: cats, sort, limit: 20 }),
+    [q, type, gameVersion, loader, cats, sort],
   );
 
   useEffect(() => {
@@ -154,10 +151,12 @@ export function Browse({ type: initialType, instanceId }: { type?: ProjectType; 
 
   const more = async () => {
     if (!hits) return;
+    const id = reqId.current;
     setLoadingMore(true);
     try {
       const r = await api.search({ ...params, offset: hits.length });
-      setHits([...hits, ...r.hits]);
+      // Поки вантажилось, змінили запит чи фільтри — ці результати вже не до речі.
+      if (id === reqId.current) setHits([...hits, ...r.hits]);
     } catch (e) {
       fail(e);
     } finally {
@@ -358,7 +357,7 @@ function ProjectModal(props: { hit: SearchHit; type: ProjectType; inst: Instance
   const gallery: string[] = (project?.gallery ?? []).map((g: Json) => g.url as string);
   const links: [string, string | undefined][] = [
     ["Modrinth", `https://modrinth.com/${project?.project_type ?? "project"}/${hit.slug}`],
-    ["Source", project?.source_url],
+    [t("browse.source"), project?.source_url],
     ["Wiki", project?.wiki_url],
     ["Discord", project?.discord_url],
   ];

@@ -159,8 +159,7 @@ pub async fn install(ctx: &Ctx, inst: &Instance, project_id: &str, version_id: O
             .ok_or_else(|| err("no_compatible_version", format!("{} не має версії для {} {}", proj["title"].as_str().unwrap_or(project_id), inst.loader, inst.mc_version)))?,
     };
 
-    let mut index = content::Index::load(&ctx.paths, &inst.id);
-    let installed_projects: HashSet<String> = index.project_ids();
+    let installed_projects: HashSet<String> = content::Index::load(&ctx.paths, &inst.id).project_ids();
     let mut queue = vec![(root_version, proj)];
     let mut visited = HashSet::new();
     let mut plan: Vec<(Value, Value)> = Vec::new();
@@ -195,6 +194,7 @@ pub async fn install(ctx: &Ctx, inst: &Instance, project_id: &str, version_id: O
     let folder = ctx.paths.game_dir(&inst.id).join(kind.folder());
     let mut dls = Vec::new();
     let mut result = Vec::new();
+    let mut metas = Vec::new();
     for (ver, p) in &plan {
         let f = primary_file(ver).ok_or_else(|| err("invalid", "у версії немає файлів"))?;
         let filename = f["filename"].as_str().unwrap_or("");
@@ -204,17 +204,8 @@ pub async fn install(ctx: &Ctx, inst: &Instance, project_id: &str, version_id: O
         }
         dls.push(Dl::new(f["url"].as_str().unwrap_or(""), path, f["hashes"]["sha1"].as_str().map(str::to_string), f["size"].as_u64()));
         let pid = ver["project_id"].as_str().unwrap_or("").to_string();
-        // Інша версія того самого проєкту — прибираємо, щоб не було дублікатів.
-        for old in index.files_of(&pid) {
-            if old != filename {
-                let _ = std::fs::remove_file(folder.join(&old));
-                let _ = std::fs::remove_file(folder.join(format!("{old}.disabled")));
-                index.remove(kind, &old);
-            }
-        }
-        index.set(
-            kind,
-            filename,
+        metas.push((
+            filename.to_string(),
             content::Meta {
                 project_id: pid.clone(),
                 version_id: ver["id"].as_str().unwrap_or("").into(),
@@ -223,10 +214,24 @@ pub async fn install(ctx: &Ctx, inst: &Instance, project_id: &str, version_id: O
                 icon_url: p["icon_url"].as_str().map(str::to_string),
                 author: None,
             },
-        );
+        ));
         result.push(Installed { project_id: pid, title: p["title"].as_str().unwrap_or("").into(), file: filename.into() });
     }
     net::download_all(&ctx.http, dls, task, "content", ctx.concurrency, true).await?;
+    // Індекс читаємо заново: поки качали, в збірку могли встановити інше.
+    let mut index = content::Index::load(&ctx.paths, &inst.id);
+    for (filename, meta) in metas {
+        // Інша версія того самого проєкту — прибираємо, щоб не було дублікатів. Лише тепер, коли нова
+        // вже на диску: обірване завантаження не лишає збірку без мода.
+        for old in index.files_of(&meta.project_id) {
+            if old != filename {
+                let _ = std::fs::remove_file(folder.join(&old));
+                let _ = std::fs::remove_file(folder.join(format!("{old}.disabled")));
+                index.remove(kind, &old);
+            }
+        }
+        index.set(kind, &filename, meta);
+    }
     index.save(&ctx.paths, &inst.id)?;
     Ok(result)
 }
@@ -294,9 +299,10 @@ pub async fn install_modpack(ctx: &Ctx, version_id: &str, task: &Arc<Task>) -> R
 
 fn read_index(path: &Path) -> Result<MrIndex> {
     let mut zip = zip::ZipArchive::new(std::fs::File::open(path).ctx(|| path.display().to_string())?)?;
-    let mut e = zip.by_name("modrinth.index.json").map_err(|_| err("invalid_modpack", "це не модпак Modrinth (немає modrinth.index.json)"))?;
+    let e = zip.by_name("modrinth.index.json").map_err(|_| err("invalid_modpack", "це не модпак Modrinth (немає modrinth.index.json)"))?;
     let mut s = String::new();
-    e.read_to_string(&mut s)?;
+    // Чужий архів: індекс-«бомба» на гігабайти не має вичерпати пам'ять.
+    e.take(64 << 20).read_to_string(&mut s)?;
     Ok(serde_json::from_str(&s)?)
 }
 
@@ -362,21 +368,23 @@ pub async fn apply_mrpack(ctx: &Ctx, path: &Path, inst: &mut Instance, task: &Ar
     net::download_all(&ctx.http, dls, task, "modpack_files", ctx.concurrency, true).await?;
 
     task.stage("modpack_overrides", 0, "");
-    for i in 0..zip.len() {
-        let mut e = zip.by_index(i)?;
-        let name = e.name()?.to_string();
-        let rel = name.strip_prefix("overrides/").or_else(|| name.strip_prefix("client-overrides/"));
-        let Some(rel) = rel.filter(|r| !r.is_empty()) else { continue };
-        let dest = util::safe_join(&game, rel)?;
-        if e.is_dir() {
-            std::fs::create_dir_all(&dest)?;
-            continue;
+    // client-overrides накладаються після overrides і перекривають їх (специфікація .mrpack).
+    for prefix in ["overrides/", "client-overrides/"] {
+        for i in 0..zip.len() {
+            let mut e = zip.by_index(i)?;
+            let name = e.name()?.to_string();
+            let Some(rel) = name.strip_prefix(prefix).filter(|r| !r.is_empty()) else { continue };
+            let dest = util::safe_join(&game, rel)?;
+            if e.is_dir() {
+                std::fs::create_dir_all(&dest)?;
+                continue;
+            }
+            if let Some(p) = dest.parent() {
+                std::fs::create_dir_all(p)?;
+            }
+            let mut out = std::fs::File::create(&dest).ctx(|| dest.display().to_string())?;
+            std::io::copy(&mut e, &mut out)?;
         }
-        if let Some(p) = dest.parent() {
-            std::fs::create_dir_all(p)?;
-        }
-        let mut out = std::fs::File::create(&dest).ctx(|| dest.display().to_string())?;
-        std::io::copy(&mut e, &mut out)?;
     }
 
     let changed = inst.mc_version != mc || inst.loader != loader || inst.loader_version != loader_version;
@@ -413,6 +421,15 @@ pub async fn identify(ctx: &Ctx, hashes: &[String]) -> Result<HashMap<String, (V
         .collect())
 }
 
+/// release 0, beta 1, alpha 2.
+fn instability(v: &Value) -> u8 {
+    match v["version_type"].as_str() {
+        Some("release") => 0,
+        Some("beta") => 1,
+        _ => 2,
+    }
+}
+
 /// Нові версії для встановлених файлів: hash → версія Modrinth.
 pub async fn updates(ctx: &Ctx, hashes: &[String], inst: &Instance, kind: Kind) -> Result<HashMap<String, Value>> {
     if hashes.is_empty() {
@@ -424,8 +441,12 @@ pub async fn updates(ctx: &Ctx, hashes: &[String], inst: &Instance, kind: Kind) 
         body["loaders"] = json!(loaders);
     }
     let resp = ctx.http.post(format!("{API}/version_files/update")).json(&body).send().await?;
+    if !resp.status().is_success() {
+        return Err(err("http", format!("Modrinth: HTTP {}", resp.status().as_u16())));
+    }
     let latest: HashMap<String, Value> = resp.json().await.unwrap_or_default();
-    // Стабільному моду бету не пропонуємо: Modrinth повертає найновішу версію будь-якого типу.
+    // Менш стабільного, ніж стоїть, не пропонуємо (стабільному — бету, беті — альфу):
+    // Modrinth повертає найновішу версію будь-якого типу.
     let current: HashMap<String, Value> = ctx
         .http
         .post(format!("{API}/version_files"))
@@ -438,15 +459,15 @@ pub async fn updates(ctx: &Ctx, hashes: &[String], inst: &Instance, kind: Kind) 
     let mut out = HashMap::new();
     for (hash, new) in latest {
         let cur = current.get(&hash);
-        let cur_release = cur.is_none_or(|c| c["version_type"] == "release");
-        if new["version_type"] == "release" || !cur_release {
+        let max = cur.map_or(0, instability);
+        if instability(&new) <= max {
             out.insert(hash, new);
             continue;
         }
-        // Найновіша — бета, а встановлено стабільну: шукаємо найновіший стабільний реліз.
+        // Найновіша менш стабільна за встановлену: шукаємо найновішу не гіршу за типом.
         let pid = new["project_id"].as_str().unwrap_or("");
         let Ok(list) = project_versions(ctx, pid, &loaders, std::slice::from_ref(&inst.mc_version)).await else { continue };
-        if let Some(rel) = list.into_iter().find(|v| v["version_type"] == "release") {
+        if let Some(rel) = list.into_iter().find(|v| instability(v) <= max) {
             let newer = cur.is_none_or(|c| rel["id"] != c["id"] && rel["date_published"].as_str() > c["date_published"].as_str());
             if newer {
                 out.insert(hash, rel);
@@ -454,4 +475,54 @@ pub async fn updates(ctx: &Ctx, hashes: &[String], inst: &Instance, kind: Kind) 
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn mrpack(path: &Path, entries: &[(&str, &str)]) {
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        let opts = zip::write::SimpleFileOptions::default();
+        zip.start_file("modrinth.index.json", opts).unwrap();
+        zip.write_all(br#"{"formatVersion":1,"game":"minecraft","versionId":"1","name":"Pack","files":[],"dependencies":{"minecraft":"1.21.1"}}"#).unwrap();
+        for (name, body) in entries {
+            zip.start_file(*name, opts).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[tokio::test]
+    async fn mrpack_overrides() {
+        let root = std::env::temp_dir().join(format!("lia-mr-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let ctx = Ctx { paths: crate::paths::Paths::new(root.clone()), http: reqwest::Client::new(), emit: Arc::new(|_: &str, _| {}), concurrency: 1 };
+        let task = ctx.task("test");
+        let pack = root.join("p.mrpack");
+        // client-overrides в архіві раніше за overrides — однаково перекривають їх.
+        mrpack(&pack, &[("client-overrides/options.txt", "client"), ("overrides/options.txt", "common"), ("overrides/config/a.json", "{}")]);
+        let inst = import_mrpack(&ctx, &pack, None, &task).await.unwrap();
+        let game = ctx.paths.game_dir(&inst.id);
+        assert_eq!(std::fs::read_to_string(game.join("options.txt")).unwrap(), "client");
+        assert!(game.join("config/a.json").is_file());
+
+        // Шлях за межі теки гри: помилка, напівстворена збірка прибрана.
+        mrpack(&pack, &[("overrides/config/b.json", "{}"), ("overrides/../../evil.txt", "x")]);
+        assert!(import_mrpack(&ctx, &pack, None, &task).await.is_err());
+        assert_eq!(std::fs::read_dir(ctx.paths.instances()).unwrap().count(), 1);
+        assert!(!ctx.paths.instances().join("evil.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn update_stability() {
+        let v = |t: &str| json!({ "version_type": t });
+        // Встановлено стабільну — бета не підходить; встановлено бету — підходить бета, не альфа.
+        assert!(instability(&v("beta")) > instability(&v("release")));
+        assert!(instability(&v("beta")) <= instability(&v("beta")));
+        assert!(instability(&v("alpha")) > instability(&v("beta")));
+        assert!(instability(&v("release")) <= instability(&v("alpha")));
+    }
 }

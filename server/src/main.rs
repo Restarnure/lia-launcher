@@ -79,8 +79,13 @@ pub fn now() -> i64 {
 }
 
 /// IP клієнта: за Cloudflare Tunnel справжня адреса — у CF-Connecting-IP.
+/// IPv6 — мережа /64: вона ціла в кожного абонента, і зі зміною адреси в ній ліміти не обходяться.
 pub fn client_ip(h: &HeaderMap) -> String {
-    h.get("cf-connecting-ip").and_then(|v| v.to_str().ok()).unwrap_or("local").to_string()
+    let ip = h.get("cf-connecting-ip").and_then(|v| v.to_str().ok()).unwrap_or("local");
+    match ip.parse() {
+        Ok(std::net::IpAddr::V6(v6)) if v6.to_ipv4_mapped().is_none() => format!("{}/64", std::net::Ipv6Addr::from_bits(v6.to_bits() & (u128::MAX << 64))),
+        _ => ip.to_string(),
+    }
 }
 
 impl App {
@@ -190,4 +195,22 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&http).await.expect("HTTP-порт");
     println!("ЛІЯ: HTTP {http}, ретранслятор :{relay_port}");
     axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn client_ip_v6_is_a_network() {
+        let ip = |v: &str| {
+            let mut h = axum::http::HeaderMap::new();
+            h.insert("cf-connecting-ip", v.parse().unwrap());
+            super::client_ip(&h)
+        };
+        assert_eq!(ip("2001:db8:1:2:aaaa::1"), ip("2001:db8:1:2:bbbb::2"));
+        assert_eq!(ip("2001:db8:1:2:aaaa::1"), "2001:db8:1:2::/64");
+        assert_ne!(ip("2001:db8:1:3::1"), ip("2001:db8:1:2::1"));
+        assert_eq!(ip("203.0.113.7"), "203.0.113.7");
+        assert_eq!(ip("::ffff:203.0.113.7"), "::ffff:203.0.113.7");
+        assert_eq!(super::client_ip(&axum::http::HeaderMap::new()), "local");
+    }
 }

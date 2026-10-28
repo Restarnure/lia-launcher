@@ -100,6 +100,8 @@ pub async fn parse(resp: reqwest::Response) -> Result<Value> {
     let msg = serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| v["errorMessage"].as_str().map(str::to_string)).unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
     Err(match status.as_u16() {
         401 => err("lia_auth", "увійдіть у ЛІЯ ID знову"),
+        // Ліміт тіла запиту сервера чи Cloudflare — відповідь тоді не JSON, і «HTTP 413» нічого не пояснює.
+        413 => err("lia", "збірка завелика для публікації"),
         _ => err("lia", msg),
     })
 }
@@ -197,8 +199,12 @@ pub fn jvm_args(jar: &Path) -> [String; 2] {
 struct Share {
     code: String,
     address: String,
+    port: u16,
     task: tokio::task::JoinHandle<()>,
 }
+
+/// Ретранслятор шле ping кожні 20 с; довша тиша — з'єднання мертве (зник інтернет, ПК спав).
+const RELAY_SILENCE: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn shares() -> &'static Mutex<HashMap<String, Share>> {
     static S: OnceLock<Mutex<HashMap<String, Share>>> = OnceLock::new();
@@ -216,7 +222,9 @@ async fn relay_conn(hello: Value) -> std::io::Result<TcpStream> {
 /// Відкриває LAN-світ (порт `port` на цьому ПК) друзям через ретранслятор. Повертає (код, адреса).
 /// `on_end` викликається, коли з'єднання з ретранслятором обірвалося.
 pub async fn share(instance: &str, token: &str, port: u16, on_end: impl FnOnce() + Send + 'static) -> Result<(String, String)> {
-    if let Some(s) = shares().lock().unwrap().get(instance) {
+    // Уже відкрито — та сама адреса. Світ на іншому порту (перевідкрили) чи обірване з'єднання — відкриваємо заново.
+    let same = |s: &Share| s.port == port && !s.task.is_finished();
+    if let Some(s) = shares().lock().unwrap().get(instance).filter(|s| same(s)) {
         return Ok((s.code.clone(), s.address.clone()));
     }
     let s = relay_conn(json!({ "kind": "host", "token": token })).await.ctx(|| "ретранслятор ЛІЇ".into())?;
@@ -228,9 +236,14 @@ pub async fn share(instance: &str, token: &str, port: u16, on_end: impl FnOnce()
     };
     let code = hello["code"].as_str().unwrap_or("").to_string();
     let address = hello["address"].as_str().unwrap_or("").to_string();
+    let mut map = shares().lock().unwrap();
+    // Паралельний виклик для того самого світу встиг першим — лишаємо його, наше з'єднання закриється.
+    if let Some(s) = map.get(instance).filter(|s| same(s)) {
+        return Ok((s.code.clone(), s.address.clone()));
+    }
     let task = tokio::spawn(async move {
         let _w = w; // тримаємо з'єднання відкритим
-        while let Ok(Some(l)) = lines.next_line().await {
+        while let Ok(Ok(Some(l))) = tokio::time::timeout(RELAY_SILENCE, lines.next_line()).await {
             let Ok(v) = serde_json::from_str::<Value>(&l) else { continue };
             if let Some(id) = v["open"].as_str() {
                 let id = id.to_string();
@@ -243,7 +256,10 @@ pub async fn share(instance: &str, token: &str, port: u16, on_end: impl FnOnce()
         }
         on_end();
     });
-    shares().lock().unwrap().insert(instance.to_string(), Share { code: code.clone(), address: address.clone(), task });
+    // Старий світ цієї збірки (інший порт) закриваємо, інакше він займав би місце на ретрансляторі.
+    if let Some(old) = map.insert(instance.to_string(), Share { code: code.clone(), address: address.clone(), port, task }) {
+        old.task.abort();
+    }
     Ok((code, address))
 }
 
@@ -397,6 +413,86 @@ mod tests {
         assert_eq!(loader_version_of("forge", "1.20.1", "1.20.1-forge-47.2.0").as_deref(), Some("47.2.0"));
         assert_eq!(loader_version_of("neoforge", "1.21.1", "neoforge-21.1.77").as_deref(), Some("21.1.77"));
         assert_eq!(loader_version_of("fabric", "1.21.4", "1.21.4"), None);
+    }
+
+    /// Службове з'єднання лаунчера до підробленого ретранслятора: (привітання, сокет).
+    async fn hello(relay: &tokio::net::TcpListener) -> (Value, BufReader<TcpStream>) {
+        use tokio::io::AsyncReadExt;
+        let (mut s, _) = tokio::time::timeout(std::time::Duration::from_secs(5), relay.accept()).await.expect("лаунчер не підключився").unwrap();
+        let mut magic = [0u8; 4];
+        s.read_exact(&mut magic).await.unwrap();
+        assert_eq!(&magic, b"\0LIA");
+        let mut r = BufReader::new(s);
+        let mut line = String::new();
+        r.read_line(&mut line).await.unwrap();
+        (serde_json::from_str(&line).unwrap(), r)
+    }
+
+    // Багатопотоковий runtime: фонові задачі ретранслятора працюють, поки тест чекає.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn relay_share() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::io::AsyncReadExt;
+        let relay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        std::env::set_var("LIA_RELAY", relay.local_addr().unwrap().to_string());
+        // «LAN-світ» хоста: луна.
+        let lan = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = lan.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = lan.accept().await {
+                tokio::spawn(async move {
+                    let (mut r, mut w) = s.split();
+                    let _ = tokio::io::copy(&mut r, &mut w).await;
+                });
+            }
+        });
+        let r = &relay;
+        let open = |code: &'static str| async move {
+            let (h, mut ctl) = hello(r).await;
+            assert_eq!(h, json!({ "kind": "host", "token": "tok" }));
+            ctl.get_mut().write_all(format!("{{\"code\":\"{code}\",\"address\":\"{code}.play.test:25570\"}}\n").as_bytes()).await.unwrap();
+            ctl
+        };
+
+        let first = tokio::spawn(share("relay-test", "tok", port, || {}));
+        let mut ctl = open("aaaaaa").await;
+        assert_eq!(first.await.unwrap().unwrap().0, "aaaaaa");
+        // Той самий світ — та сама адреса без нового з'єднання.
+        assert_eq!(share("relay-test", "tok", port, || {}).await.unwrap().0, "aaaaaa");
+        assert!(tokio::time::timeout(Duration::from_millis(200), relay.accept()).await.is_err());
+
+        // Гравець: ретранслятор просить з'єднання даних, байти йдуть у світ і назад.
+        ctl.get_mut().write_all(b"{\"ping\":1}\n{\"open\":\"p1\"}\n").await.unwrap();
+        let (h, mut data) = hello(&relay).await;
+        assert_eq!(h, json!({ "kind": "data", "id": "p1" }));
+        data.get_mut().write_all(b"handshake").await.unwrap();
+        let mut buf = [0u8; 9];
+        data.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"handshake");
+
+        // Світ перевідкрили на іншому порту: новий код, старе з'єднання закрито.
+        let ended = Arc::new(AtomicBool::new(false));
+        let e = ended.clone();
+        let second = tokio::spawn(share("relay-test", "tok", port + 1, move || e.store(true, Ordering::SeqCst)));
+        let ctl2 = open("bbbbbb").await;
+        assert_eq!(second.await.unwrap().unwrap().0, "bbbbbb");
+        let mut b = [0u8; 64];
+        assert_eq!(tokio::time::timeout(Duration::from_secs(5), ctl.read(&mut b)).await.unwrap().unwrap(), 0);
+
+        // Ретранслятор обірвав з'єднання: on_end, і наступний виклик відкриває світ заново, а не віддає мертву адресу.
+        drop(ctl2);
+        let t0 = std::time::Instant::now();
+        // on_end — останнє, що робить задача, але завершиться вона трохи пізніше.
+        while !ended.load(Ordering::SeqCst) || !shares().lock().unwrap().get("relay-test").is_some_and(|s| s.task.is_finished()) {
+            assert!(t0.elapsed() < Duration::from_secs(5), "on_end не викликано");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let third = tokio::spawn(share("relay-test", "tok", port + 1, || {}));
+        let _ctl3 = open("cccccc").await;
+        assert_eq!(third.await.unwrap().unwrap().0, "cccccc");
+        unshare("relay-test");
     }
 
     #[test]

@@ -69,13 +69,15 @@ export function InstanceView({ id, tab }: { id: string; tab?: InstanceTab }) {
             </span>
           </div>
         </div>
-        <button className="btn icon" title={t("common.open_folder")} onClick={() => api.instanceFolder(inst.id).then((p) => api.openPath(p)).catch(fail)}>
-          <FolderOpen size={17} />
-        </button>
-        <PublishButton inst={inst} />
-        <Menu items={instanceMenu(inst)} className="btn icon" />
-        <FriendsPlayButton inst={inst} />
-        <PlayButton inst={inst} />
+        <div className="inst-actions">
+          <button className="btn icon" title={t("common.open_folder")} onClick={() => api.instanceFolder(inst.id).then((p) => api.openPath(p)).catch(fail)}>
+            <FolderOpen size={17} />
+          </button>
+          <PublishButton inst={inst} />
+          <Menu items={instanceMenu(inst)} className="btn icon" />
+          <FriendsPlayButton inst={inst} />
+          <PlayButton inst={inst} />
+        </div>
       </header>
 
       <nav className="tabs">
@@ -159,7 +161,8 @@ function ContentTab({ inst, kind }: { inst: Instance; kind: ContentKind }) {
         fail(e);
       }
     }
-    setUpdating(new Set());
+    // Лише свої файли: оновлення іншого мода, запущене паралельно, ще триває.
+    setUpdating((s) => new Set([...s].filter((f) => !list.some((u) => u.file === f))));
     load();
   };
 
@@ -183,7 +186,7 @@ function ContentTab({ inst, kind }: { inst: Instance; kind: ContentKind }) {
   };
 
   const addFile = async () => {
-    const files = await open({ multiple: true, filters: [{ name: kind, extensions: kind === "mods" ? ["jar"] : ["zip"] }] });
+    const files = await open({ multiple: true, filters: [{ name: t(`inst.tab.${kind}` as Key), extensions: kind === "mods" ? ["jar"] : ["zip"] }] });
     if (!files || (Array.isArray(files) && files.length === 0)) return;
     try {
       const n = await api.contentAdd(inst.id, kind, Array.isArray(files) ? files : [files]);
@@ -351,6 +354,12 @@ function ShotsTab({ inst }: { inst: Instance }) {
   useEffect(() => {
     load();
   }, [load]);
+  useEffect(() => {
+    if (!view) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setView(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [view]);
   if (shots === null) return <div className="skeleton" style={{ height: 160 }} />;
   if (shots.length === 0) return <Empty icon={<ImageIcon size={38} className="faint" />} title={t("inst.empty_shots")} text={t("inst.empty_shots_text")} />;
   return (

@@ -275,19 +275,27 @@ async fn install_from_jar(ctx: &Ctx, java: &Path, jar: &Path, tmp: &Path, task: 
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
     let mut child = cmd.spawn().ctx(|| java.display().to_string())?;
-    let mut out = BufReader::new(child.stdout.take().unwrap()).lines();
+    // Байтами, не lines(): Java пише шляхи в cp1251 (кирилиця в імені користувача), lines() на цьому
+    // повертає помилку, читання stdout зупиняється, і інсталятор назавжди блокується на повному каналі.
+    let mut out = BufReader::new(child.stdout.take().unwrap()).split(b'\n');
     let stderr = child.stderr.take().unwrap();
     let err_task = tokio::spawn(async move {
-        let mut s = String::new();
-        let _ = tokio::io::AsyncReadExt::read_to_string(&mut BufReader::new(stderr), &mut s).await;
-        s
+        let mut s = Vec::new();
+        let _ = tokio::io::AsyncReadExt::read_to_end(&mut BufReader::new(stderr), &mut s).await;
+        crate::launch::decode(&s)
     });
     let mut tail: Vec<String> = Vec::new();
     let mut done = 0u64;
     loop {
+        // Не лише в паузах виводу: під час завантаження бібліотек рядки йдуть безперервно.
+        if task.cancelled() {
+            let _ = child.kill().await;
+            return Err(Error::Cancelled);
+        }
         tokio::select! {
-            line = out.next_line() => match line {
+            line = out.next_segment() => match line {
                 Ok(Some(l)) => {
+                    let l = crate::launch::decode(&l).trim_end_matches('\r').to_string();
                     if l.contains("Downloading library") || l.contains("Considering library") || l.contains("MainClass:") {
                         done = (done + 1).min(total as u64);
                         task.set(done);
@@ -297,12 +305,7 @@ async fn install_from_jar(ctx: &Ctx, java: &Path, jar: &Path, tmp: &Path, task: 
                 }
                 _ => break,
             },
-            _ = tokio::time::sleep(std::time::Duration::from_millis(300)) => {
-                if task.cancelled() {
-                    let _ = child.kill().await;
-                    return Err(Error::Cancelled);
-                }
-            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
         }
     }
     let status = child.wait().await?;

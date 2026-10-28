@@ -212,15 +212,15 @@ pub async fn login(st: S, h: HeaderMap, Json(r): Json<LoginReq>) -> R<Json<Value
     let ip = crate::client_ip(&h);
     st.limit(format!("auth:{ip}"), 20, Duration::from_secs(600))?;
     let login = r.name.trim();
-    let row: Option<(i64, String, i64, i64)> = st
+    let row: Option<(i64, String, i64)> = st
         .db
         .lock()
         .unwrap()
-        .query_row("SELECT id, pass, failed, locked_until FROM users WHERE name = ?1 OR email = ?2", params![login, login.to_lowercase()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .query_row("SELECT id, pass, locked_until FROM users WHERE name = ?1 OR email = ?2", params![login, login.to_lowercase()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .optional()
         .map_err(internal)?;
     let now = crate::now();
-    let Some((id, pass, failed, locked_until)) = row else {
+    let Some((id, pass, locked_until)) = row else {
         verify_password(&r.password, DUMMY);
         return Err(forbidden("Неправильний нік або пароль."));
     };
@@ -228,19 +228,27 @@ pub async fn login(st: S, h: HeaderMap, Json(r): Json<LoginReq>) -> R<Json<Value
         let mins = (locked_until - now) / 60_000 + 1;
         return Err(ApiErr(StatusCode::TOO_MANY_REQUESTS, "Locked", format!("забагато невдалих спроб — вхід закрито ще на {mins} хв")));
     }
+    // Спроба рахується до перевірки пароля й атомарно в базі: паралельні запити не дадуть більше LOCK_AFTER спроб.
+    let n: Option<i64> = st
+        .db
+        .lock()
+        .unwrap()
+        .query_row("UPDATE users SET failed = failed + 1 WHERE id = ?1 AND locked_until <= ?2 RETURNING failed", params![id, now], |r| r.get(0))
+        .optional()
+        .map_err(internal)?;
+    let n = n.filter(|n| *n <= LOCK_AFTER).ok_or_else(|| ApiErr(StatusCode::TOO_MANY_REQUESTS, "Locked", "забагато невдалих спроб — вхід закрито на 15 хв".into()))?;
     if !verify_password(&r.password, &pass) {
-        let failed = failed + 1;
-        let db = st.db.lock().unwrap();
-        if failed >= LOCK_AFTER {
+        if n == LOCK_AFTER {
+            let db = st.db.lock().unwrap();
             db.execute("UPDATE users SET failed = 0, locked_until = ?1 WHERE id = ?2", params![now + LOCK_FOR, id]).map_err(internal)?;
             drop(db);
-            if let Some(u) = api::user_by_id(&st, id).filter(|u| u.verified) {
+            // Лист — не частіше разу на добу (або після успішного входу): інакше будь-хто, знаючи нік,
+            // засипав би людину листами й вичерпав ліміт поштового сервісу.
+            if let Some(u) = api::user_by_id(&st, id).filter(|u| u.verified && locked_until < now - 24 * 3600_000) {
                 if let Some(e) = &u.email {
                     mail::send(&st, e, "Хтось намагається увійти у ваш ЛІЯ ID", &[format!("{}, у ваш ЛІЯ ID кілька разів ввели неправильний пароль. Вхід закрито на 15 хвилин.", u.name), "Якщо це були не ви — змініть пароль у лаунчері.".into()]);
                 }
             }
-        } else {
-            db.execute("UPDATE users SET failed = ?1 WHERE id = ?2", params![failed, id]).map_err(internal)?;
         }
         return Err(forbidden("Неправильний нік або пароль."));
     }
@@ -381,13 +389,17 @@ pub struct ResetReq {
 pub async fn reset(st: S, h: HeaderMap, Json(r): Json<ResetReq>) -> R<StatusCode> {
     st.limit(format!("reset:{}", crate::client_ip(&h)), 20, Duration::from_secs(3600))?;
     let login = r.login.trim();
+    // Пароль — до коду (інакше слабкий пароль «спалив» би правильний код) і до пошуку акаунта
+    // (щоб відповідь не підказувала, чи такий акаунт є).
+    valid_password(&r.password, login)?;
     let id = st.db.lock().unwrap().query_row("SELECT id FROM users WHERE name = ?1 OR email = ?2", params![login, login.to_lowercase()], |r| r.get::<_, i64>(0)).optional().map_err(internal)?;
     let u = id.and_then(|id| api::user_by_id(&st, id)).ok_or_else(|| bad("код неправильний або застарів — надішліть новий"))?;
     take_code(&st, u.id, "reset", &r.code)?;
     valid_password(&r.password, &u.name)?;
+    let pass = hash_password(&r.password)?;
     {
         let db = st.db.lock().unwrap();
-        db.execute("UPDATE users SET pass = ?1, failed = 0, locked_until = 0 WHERE id = ?2", params![hash_password(&r.password)?, u.id]).map_err(internal)?;
+        db.execute("UPDATE users SET pass = ?1, failed = 0, locked_until = 0 WHERE id = ?2", params![pass, u.id]).map_err(internal)?;
         // Новий пароль — вихід з усіх пристроїв і з гри.
         db.execute("DELETE FROM tokens WHERE user = ?1", [u.id]).map_err(internal)?;
     }
@@ -408,9 +420,10 @@ pub async fn change_password(st: S, h: HeaderMap, Json(r): Json<PasswordReq>) ->
     st.limit(format!("auth:{}", crate::client_ip(&h)), 20, Duration::from_secs(600))?;
     api::check_password(&st, &u.name, &r.old)?;
     valid_password(&r.new, &u.name)?;
+    let pass = hash_password(&r.new)?;
     {
         let db = st.db.lock().unwrap();
-        db.execute("UPDATE users SET pass = ?1 WHERE id = ?2", params![hash_password(&r.new)?, u.id]).map_err(internal)?;
+        db.execute("UPDATE users SET pass = ?1 WHERE id = ?2", params![pass, u.id]).map_err(internal)?;
         // Інші пристрої виходять; цей лишається.
         db.execute("DELETE FROM tokens WHERE user = ?1 AND hash != ?2", params![u.id, api::token_hash(token_from(&h))]).map_err(internal)?;
     }

@@ -86,11 +86,12 @@ pub fn profile_by(app: &App, col: &str, val: &str) -> Option<Profile> {
     app.db.lock().unwrap().query_row(&format!("SELECT {PROFILE_COLS} FROM profiles WHERE {col} = ?1"), [val], row_profile).ok()
 }
 
-/// Профіль, на який виписано ігровий токен.
+/// Профіль, на який виписано ігровий токен. Ліцензійний профіль переходить до того, хто останнім довів
+/// ліцензію, — тоді токени попереднього власника вже не діють.
 pub fn token_profile(app: &App, token: &str) -> Option<Profile> {
     let db = app.db.lock().unwrap();
-    let pid: i64 = db.query_row("SELECT profile FROM tokens WHERE hash = ?1 AND profile IS NOT NULL", [api::token_hash(token)], |r| r.get(0)).ok()?;
-    db.query_row(&format!("SELECT {PROFILE_COLS} FROM profiles WHERE id = ?1"), [pid], row_profile).ok()
+    let (pid, user): (i64, i64) = db.query_row("SELECT profile, user FROM tokens WHERE hash = ?1 AND profile IS NOT NULL", [api::token_hash(token)], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
+    db.query_row(&format!("SELECT {PROFILE_COLS} FROM profiles WHERE id = ?1 AND user = ?2"), [pid, user], row_profile).ok()
 }
 
 /// Текстури профілю: у ліцензії — скін з Mojang; офлайн-нік — стандартний.

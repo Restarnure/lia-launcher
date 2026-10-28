@@ -5,6 +5,7 @@
 use crate::{api, App};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -21,7 +22,13 @@ pub struct Hub {
     hosts: Mutex<HashMap<String, Host>>,
     /// Гравці, що чекають на з'єднання даних від хоста: id → (сокет, уже прочитані байти, код світу).
     pending: Mutex<HashMap<String, (TcpStream, Vec<u8>, String)>>,
+    /// З'єднання, що ще не пройшли рукостискання, з кожного IP.
+    handshakes: Mutex<HashMap<IpAddr, u32>>,
 }
+
+/// Не більше стількох з'єднань з одного IP на етапі рукостискання (до 15 с): повільні з'єднання
+/// без жодного байта інакше вичерпали б дескриптори всього сервера, разом з HTTP.
+const HANDSHAKES_PER_IP: u32 = 32;
 
 impl Hub {
     pub fn owner(&self, code: &str) -> Option<i64> {
@@ -32,11 +39,34 @@ impl Hub {
 pub async fn listen(app: Arc<App>, port: u16) {
     let l = TcpListener::bind(("0.0.0.0", port)).await.expect("порт ретранслятора");
     loop {
-        let Ok((s, _)) = l.accept().await else { continue };
+        let Ok((s, peer)) = l.accept().await else {
+            // Скінчилися дескриптори тощо — не крутимо цикл упусту.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        };
+        let ip = peer.ip();
+        {
+            let mut m = app.relay.handshakes.lock().unwrap();
+            let n = m.entry(ip).or_insert(0);
+            if *n >= HANDSHAKES_PER_IP {
+                continue;
+            }
+            *n += 1;
+        }
         let _ = s.set_nodelay(true);
         let app = app.clone();
         tokio::spawn(async move {
-            if let Ok(Ok(Some(rest))) = tokio::time::timeout(Duration::from_secs(15), route(&app, s)).await {
+            let r = tokio::time::timeout(Duration::from_secs(15), route(&app, s)).await;
+            {
+                let mut m = app.relay.handshakes.lock().unwrap();
+                if let Some(n) = m.get_mut(&ip) {
+                    *n -= 1;
+                    if *n == 0 {
+                        m.remove(&ip);
+                    }
+                }
+            }
+            if let Ok(Ok(Some(rest))) = r {
                 rest.await;
             }
         });
@@ -207,7 +237,9 @@ fn host(app: Arc<App>, s: TcpStream, token: &str) -> Option<Cont> {
         let (r, mut w) = s.into_split();
         let hello = json!({ "code": code, "address": format!("{code}.{}:{}", app.cfg.play_domain, app.cfg.relay_port) }).to_string() + "\n";
         if w.write_all(hello.as_bytes()).await.is_ok() {
-            let mut lines = BufReader::new(r).lines();
+            // Лаунчер у керівне з'єднання нічого не пише; читаємо лише, щоб помітити розрив.
+            // Не рядками: рядок без кінця ріс би в пам'яті без меж.
+            let (mut r, mut buf) = (r, [0u8; 256]);
             let mut ping = tokio::time::interval(Duration::from_secs(20));
             loop {
                 tokio::select! {
@@ -215,7 +247,7 @@ fn host(app: Arc<App>, s: TcpStream, token: &str) -> Option<Cont> {
                         Some(m) => if w.write_all((m + "\n").as_bytes()).await.is_err() { break },
                         None => break,
                     },
-                    l = lines.next_line() => match l { Ok(Some(_)) => {}, _ => break },
+                    n = r.read(&mut buf) => if !matches!(n, Ok(n) if n > 0) { break },
                     _ = ping.tick() => if w.write_all(b"{\"ping\":1}\n").await.is_err() { break },
                 }
             }

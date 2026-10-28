@@ -54,7 +54,10 @@ function Stage({ data, slim, cape }: { data: string | null; slim: boolean; cape:
     anim.speed = 0.5;
     v.animation = anim;
     viewer.current = v;
-    return () => v.dispose();
+    return () => {
+      v.dispose();
+      v.renderer.forceContextLoss();
+    };
   }, []);
   useEffect(() => {
     const v = viewer.current;

@@ -8,7 +8,8 @@ pub async fn data_url(http: &reqwest::Client, url: &str) -> Result<String> {
     // Профіль Mojang віддає текстури за http:// — тягнемо їх тим самим шляхом, але за https.
     let url = url.replacen("http://", "https://", 1);
     let u = url::Url::parse(&url).map_err(|e| err("invalid", e.to_string()))?;
-    if u.scheme() != "https" || !u.host_str().is_some_and(|h| h.ends_with("minecraft.net") || h.ends_with("mojang.com")) {
+    let mojang = |h: &str| ["minecraft.net", "mojang.com"].iter().any(|d| h == *d || h.strip_suffix(d).is_some_and(|s| s.ends_with('.')));
+    if u.scheme() != "https" || !u.host_str().is_some_and(mojang) {
         return Err(err("invalid", "скін не з серверів Mojang"));
     }
     let bytes = net::get_bytes(http, &url).await?;
@@ -41,4 +42,22 @@ pub fn default_skin(paths: &Paths) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn only_mojang_hosts() {
+        // Проксі, що одразу рве з'єднання: дозволена адреса доходить до мережі й падає там, а не на перевірці.
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = proxy.local_addr().unwrap().port();
+        std::thread::spawn(move || proxy.incoming().for_each(drop));
+        let http = reqwest::Client::builder().proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}")).unwrap()).build().unwrap();
+        for bad in ["https://evilminecraft.net/x.png", "https://minecraft.net.evil.com/x.png", "https://notmojang.com/x.png", "file:///C:/x.png"] {
+            assert_eq!(super::data_url(&http, bad).await.unwrap_err().code(), "invalid", "{bad}");
+        }
+        for ok in ["http://textures.minecraft.net/texture/ab", "https://minecraft.net/x.png", "https://s.mojang.com/x.png"] {
+            assert_ne!(super::data_url(&http, ok).await.unwrap_err().code(), "invalid", "{ok}");
+        }
+    }
 }

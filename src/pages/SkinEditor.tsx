@@ -114,6 +114,8 @@ export function SkinEditor({ start }: { start?: EditorStart }) {
         tmp.loadSkin(img, { model: "default" });
         g.drawImage(tmp.skinCanvas, 0, 0, 64, 64);
         tmp.dispose();
+        // dispose() не звільняє WebGL-контекст, а їх у сторінки ~16: зайві губляться разом із живими переглядами.
+        tmp.renderer.forceContextLoss();
       }
       undo.current = [];
       redo.current = [];
@@ -511,6 +513,7 @@ function Viewport3D(props: {
     return () => {
       ro.disconnect();
       v.dispose();
+      v.renderer.forceContextLoss();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -561,7 +564,6 @@ function Viewport3D(props: {
     const skin = v.playerObject.skin;
     const targets: Object3D[] = PARTS.filter((p) => !cb.current.hidden.has(p)).map((p) => (cb.current.layer === "outer" ? skin[p].outerLayer : skin[p].innerLayer));
     const h: Intersection | undefined = ray.intersectObjects(targets, true)[0];
-    (window as any).__dbg = { h };
     if (!h?.uv || !h.face) return null;
     // Межа грані — середина між вершинами трикутника, щоб на ребрі не схопити сусідню грань.
     const uv = (h.object as unknown as { geometry: { attributes: { uv: { getX(i: number): number; getY(i: number): number } } } }).geometry.attributes.uv;

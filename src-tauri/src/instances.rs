@@ -63,7 +63,8 @@ fn file(paths: &Paths, id: &str) -> std::path::PathBuf {
 }
 
 fn check(id: &str) -> Result<()> {
-    if id.is_empty() || id.contains(['/', '\\', ':']) || id == "." || id == ".." {
+    // Windows відкидає крапки й пробіли в кінці: «...» — це сама тека instances.
+    if id.is_empty() || id.contains(['/', '\\', ':']) || id.ends_with(['.', ' ']) {
         return Err(err("invalid", format!("неприпустимий ідентифікатор збірки: {id}")));
     }
     Ok(())
@@ -105,15 +106,22 @@ pub fn validate_name(name: &str) -> Result<String> {
     Ok(name.to_string())
 }
 
-fn free_id(paths: &Paths, name: &str) -> String {
+/// Вільна назва теки — тека одразу й створюється: дві збірки з однаковою назвою, що створюються
+/// одночасно (імпорт модпаків), не потраплять в одну теку.
+fn free_id(paths: &Paths, name: &str) -> Result<String> {
+    std::fs::create_dir_all(paths.instances()).ctx(|| paths.instances().display().to_string())?;
     let base = util::slugify(name);
     let mut id = base.clone();
     let mut n = 2;
-    while paths.instance_dir(&id).exists() {
+    loop {
+        match std::fs::create_dir(paths.instance_dir(&id)) {
+            Ok(()) => return Ok(id),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e).ctx(|| paths.instance_dir(&id).display().to_string()),
+        }
         id = format!("{base}-{n}");
         n += 1;
     }
-    id
 }
 
 pub fn create(paths: &Paths, spec: NewInstance) -> Result<Instance> {
@@ -122,7 +130,7 @@ pub fn create(paths: &Paths, spec: NewInstance) -> Result<Instance> {
         return Err(err("invalid", format!("невідомий модлоадер {}", spec.loader)));
     }
     crate::mojang::install::check_id(&spec.mc_version)?;
-    let id = free_id(paths, &name);
+    let id = free_id(paths, &name)?;
     std::fs::create_dir_all(paths.game_dir(&id)).ctx(|| paths.game_dir(&id).display().to_string())?;
     let inst = Instance {
         id,
@@ -158,9 +166,42 @@ pub fn duplicate(paths: &Paths, id: &str, copy_suffix: &str) -> Result<Instance>
     if name.chars().count() > 48 {
         name = name.chars().take(48).collect();
     }
-    let new_id = free_id(paths, &name);
-    util::copy_dir(&paths.instance_dir(id), &paths.instance_dir(&new_id))?;
-    let inst = Instance { id: new_id, name, created: util::now_ms(), last_played: None, play_time: 0, ..src };
+    let new_id = free_id(paths, &name)?;
+    if let Err(e) = util::copy_dir(&paths.instance_dir(id), &paths.instance_dir(&new_id)) {
+        let _ = std::fs::remove_dir_all(paths.instance_dir(&new_id));
+        return Err(e);
+    }
+    // Копія — звичайна збірка: кнопка закріпленого сервера й далі веде в оригінал.
+    let inst = Instance { id: new_id, name, created: util::now_ms(), last_played: None, play_time: 0, featured: None, ..src };
     save(paths, &inst)?;
     Ok(inst)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ids_and_duplicates() {
+        for bad in ["", ".", "..", "...", "a.", "a ", "a/b", "a\\b", "c:x"] {
+            assert!(check(bad).is_err(), "{bad}");
+        }
+        assert!(check("fabric-1-21").is_ok());
+
+        let root = std::env::temp_dir().join(format!("lia-inst-{}", std::process::id()));
+        let paths = Paths::new(root.clone());
+        // Однакова назва — різні теки, навіть якщо instance.json ще не записано.
+        assert_eq!(free_id(&paths, "Shotam").unwrap(), "shotam");
+        assert_eq!(free_id(&paths, "Shotam").unwrap(), "shotam-2");
+
+        let mut src = create(&paths, NewInstance { name: "Shotam".into(), mc_version: "1.21.11".into(), loader: "fabric".into(), loader_version: None, icon: None }).unwrap();
+        assert_eq!(src.id, "shotam-3");
+        src.featured = Some("shotam".into());
+        save(&paths, &src).unwrap();
+        let copy = duplicate(&paths, &src.id, "(копія)").unwrap();
+        assert_eq!(copy.featured, None);
+        assert_eq!(get(&paths, &copy.id).unwrap().featured, None);
+        assert_eq!(get(&paths, &src.id).unwrap().featured.as_deref(), Some("shotam"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

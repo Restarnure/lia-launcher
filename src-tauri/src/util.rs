@@ -18,7 +18,10 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).ctx(|| dir.display().to_string())?;
     }
-    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    // Свій тимчасовий файл на кожен виклик: два одночасні записи одного файлу не змішуються.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp{}-{n}", std::process::id()));
     std::fs::write(&tmp, bytes).ctx(|| tmp.display().to_string())?;
     std::fs::rename(&tmp, path).ctx(|| path.display().to_string())
 }
@@ -63,7 +66,8 @@ pub fn safe_join(base: &Path, rel: &str) -> Result<PathBuf> {
     let mut out = base.to_path_buf();
     for c in p.components() {
         match c {
-            Component::Normal(s) => out.push(s),
+            // Windows відкидає крапки й пробіли в кінці: «...» означає саму теку.
+            Component::Normal(s) if !s.to_string_lossy().trim_end_matches(['.', ' ']).is_empty() => out.push(s),
             Component::CurDir => {}
             _ => return Err(err("invalid", format!("небезпечний шлях у файлі: {rel}"))),
         }
@@ -125,7 +129,12 @@ pub fn copy_dir(from: &Path, to: &Path) -> Result<()> {
     for e in std::fs::read_dir(from)? {
         let e = e?;
         let dest = to.join(e.file_name());
-        if e.file_type()?.is_dir() {
+        // Замок світу запущеної гри не копіюється (і не потрібен копії).
+        if e.file_name() == "session.lock" {
+            continue;
+        }
+        // is_dir() по шляху йде за посиланням: тека-junction (спільні mods/saves) копіюється вмістом.
+        if e.path().is_dir() {
             copy_dir(&e.path(), &dest)?;
         } else {
             std::fs::copy(e.path(), &dest).ctx(|| dest.display().to_string())?;
@@ -161,6 +170,28 @@ mod tests {
         assert!(safe_join(base, "C:/Windows/evil").is_err());
         assert!(safe_join(base, "/etc/passwd").is_err());
         assert!(safe_join(base, "").is_err());
+        assert!(safe_join(base, "...").is_err());
+        assert!(safe_join(base, "mods/. .").is_err());
+        assert!(safe_join(base, "mods/a.").is_ok());
+    }
+
+    /// Кілька записів одного файлу одночасно: кожен має вдатися, а файл — бути цілим.
+    #[test]
+    fn atomic_concurrent() {
+        let path = std::env::temp_dir().join(format!("lia-atomic-{}.json", std::process::id()));
+        let ok = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..8usize)
+                .map(|i| {
+                    let path = &path;
+                    s.spawn(move || (0..30).all(|_| write_atomic(path, &vec![b'a' + i as u8; 1000 + i * 100]).is_ok()))
+                })
+                .collect();
+            hs.into_iter().all(|h| h.join().unwrap())
+        });
+        let data = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(ok);
+        assert!(data.iter().all(|&b| b == data[0]) && data.len() == 1000 + (data[0] - b'a') as usize * 100);
     }
 
     #[test]

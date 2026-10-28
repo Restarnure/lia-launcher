@@ -84,6 +84,11 @@ struct AssetObject {
     size: u64,
 }
 
+/// Хеш з індексу стає шляхом `objects/xx/<хеш>` — лише 40 малих hex-символів.
+fn valid_hash(h: &str) -> bool {
+    h.len() == 40 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 pub struct Prepared {
     pub json: VersionJson,
     pub classpath: Vec<PathBuf>,
@@ -110,6 +115,7 @@ pub async fn prepare(ctx: &Ctx, id: &str, task: &Arc<Task>, verify: bool) -> Res
     let json = resolve(ctx, id).await?;
     let jar_id = json.jar.clone().unwrap_or_else(|| json.id.clone());
     check_id(&jar_id)?;
+    check_id(&json.id)?;
 
     let mut dls = Vec::new();
     let mut classpath = Vec::new();
@@ -118,7 +124,7 @@ pub async fn prepare(ctx: &Ctx, id: &str, task: &Arc<Task>, verify: bool) -> Res
 
     for lib in json.libraries.iter().filter(|l| l.allowed(&env)) {
         if let Some(a) = lib.artifact() {
-            let path = ctx.paths.library(&a.path);
+            let path = util::safe_join(&ctx.paths.libraries(), &a.path)?;
             match a.url {
                 Some(url) => dls.push(Dl::new(url, path.clone(), a.sha1, a.size)),
                 None if !path.exists() => missing_local.push(lib.name.clone()),
@@ -127,7 +133,7 @@ pub async fn prepare(ctx: &Ctx, id: &str, task: &Arc<Task>, verify: bool) -> Res
             classpath.push(path);
         }
         if let Some(n) = lib.native(&env) {
-            let path = ctx.paths.library(&n.path);
+            let path = util::safe_join(&ctx.paths.libraries(), &n.path)?;
             if let Some(url) = n.url {
                 dls.push(Dl::new(url, path.clone(), n.sha1, n.size));
             }
@@ -153,22 +159,25 @@ pub async fn prepare(ctx: &Ctx, id: &str, task: &Arc<Task>, verify: bool) -> Res
     let launch_jar = ctx.paths.version_jar(&json.id);
     classpath.push(launch_jar.clone());
 
-    let log_config = json.logging.as_ref().and_then(|l| l.client.as_ref()).map(|c| {
-        let path = ctx.paths.log_config(&c.file.id);
-        dls.push(Dl::new(&c.file.url, path.clone(), c.file.sha1.clone(), c.file.size));
-        (path, c.argument.clone())
-    });
+    let log_config = match json.logging.as_ref().and_then(|l| l.client.as_ref()) {
+        Some(c) => {
+            check_id(&c.file.id)?;
+            let path = ctx.paths.log_config(&c.file.id);
+            dls.push(Dl::new(&c.file.url, path.clone(), c.file.sha1.clone(), c.file.size));
+            Some((path, c.argument.clone()))
+        }
+        None => None,
+    };
 
     let index_ref = json.asset_index.clone().ok_or_else(|| err("invalid", format!("у профілі {id} немає assetIndex")))?;
     check_id(&index_ref.id)?;
     let index_path = ctx.paths.asset_index(&index_ref.id);
     let index_dl = Dl::new(&index_ref.url, index_path.clone(), index_ref.sha1.clone(), index_ref.size);
-    net::download_all(&ctx.http, vec![index_dl], task, "version", 1, verify).await?;
-    let index: AssetIndex = util::read_json(&index_path)?;
+    // Індекс знімків оновлюється під тим самим id, а розмір може збігтися — SHA1 перевіряємо завжди (файл малий).
+    net::download_all(&ctx.http, vec![index_dl], task, "version", 1, true).await?;
+    let mut index: AssetIndex = util::read_json(&index_path)?;
+    index.objects.retain(|_, o| valid_hash(&o.hash));
     for obj in index.objects.values() {
-        if obj.hash.len() < 2 {
-            continue;
-        }
         let url = format!("{RESOURCES_URL}/{}/{}", &obj.hash[..2], obj.hash);
         dls.push(Dl::new(url, ctx.paths.asset_object(&obj.hash), Some(obj.hash.clone()), Some(obj.size)));
     }
@@ -196,8 +205,12 @@ pub async fn prepare(ctx: &Ctx, id: &str, task: &Arc<Task>, verify: bool) -> Res
 }
 
 /// Жорстке посилання (без зайвих 25+ МБ), а якщо файлова система не вміє — копія.
+/// Повторно завантажений client.jar — новий файл з новим часом зміни, старе посилання на нього не вказує.
 fn link_jar(src: &Path, dest: &Path) -> Result<()> {
-    let same = std::fs::metadata(dest).ok().zip(std::fs::metadata(src).ok()).is_some_and(|(a, b)| a.len() == b.len());
+    let same = std::fs::metadata(dest)
+        .ok()
+        .zip(std::fs::metadata(src).ok())
+        .is_some_and(|(a, b)| a.len() == b.len() && a.modified().ok() == b.modified().ok());
     if same {
         return Ok(());
     }
@@ -248,4 +261,36 @@ pub fn extract_natives(natives: &[(PathBuf, Vec<String>)], dir: &Path) -> Result
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// «Полагодити» качає client.jar наново (новий файл через rename) — посилання профілю має його побачити.
+    #[test]
+    fn relinks_redownloaded_jar() {
+        let dir = std::env::temp_dir().join(format!("lia-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (src, dest) = (dir.join("v.jar"), dir.join("p").join("p.jar"));
+        std::fs::write(&src, b"old!").unwrap();
+        link_jar(&src, &dest).unwrap();
+        let part = dir.join("v.jar.part");
+        std::fs::write(&part, b"new!").unwrap();
+        std::fs::File::options().write(true).open(&part).unwrap().set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000)).unwrap();
+        std::fs::rename(&part, &src).unwrap();
+        link_jar(&src, &dest).unwrap();
+        let got = std::fs::read(&dest).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(got, b"new!");
+    }
+
+    #[test]
+    fn asset_hashes() {
+        assert!(valid_hash("bdf48ef6b5d0d23bbb02e17d04865216179f510a"));
+        for bad in ["", "a", "../../../../windows/x", "é0000000000000000000000000000000000000000", "BDF48EF6B5D0D23BBB02E17D04865216179F510"] {
+            assert!(!valid_hash(bad), "{bad}");
+        }
+    }
 }

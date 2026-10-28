@@ -307,6 +307,8 @@ p {
   align-items: center;
   gap: 14px;
   margin-bottom: 22px;
+  /* Кнопки, що не влазять (вузьке вікно, масштаб 125%), — новим рядком, а не за край. */
+  flex-wrap: wrap;
 }
 
 .page-head h1 {

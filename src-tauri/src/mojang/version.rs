@@ -219,13 +219,10 @@ impl VersionJson {
                 Some(Arguments { game: [p.game, c.game].concat(), jvm: [p.jvm, c.jvm].concat() })
             }
         };
-        let mut seen = HashSet::new();
-        let libraries = self
-            .libraries
-            .into_iter()
-            .chain(parent.libraries)
-            .filter(|l| seen.insert(l.dedupe_key()))
-            .collect();
+        // Лише дочірній перекриває батька: власні дублікати батька — це варіанти під різні ОС
+        // (lwjgl 3.2.1 для macOS і 3.2.2 для решти в 1.14–1.18) або окремий запис natives (1.13).
+        let child: HashSet<String> = self.libraries.iter().map(Library::dedupe_key).collect();
+        let libraries = self.libraries.into_iter().chain(parent.libraries.into_iter().filter(|l| !child.contains(&l.dedupe_key()))).collect();
         VersionJson {
             id: self.id,
             inherits_from: parent.inherits_from,
@@ -337,5 +334,21 @@ mod tests {
         let a = m.arguments.unwrap();
         assert_eq!(a.game.len(), 2);
         assert_eq!(a.jvm.len(), 3);
+    }
+
+    /// 1.14–1.18 перелічують lwjgl 3.2.1 (лише macOS) перед 3.2.2, 1.13 — jar і natives окремими записами.
+    #[test]
+    fn merge_keeps_parent_variants() {
+        let parent: VersionJson = serde_json::from_str(
+            r#"{"id":"1.16.5","libraries":[
+                {"name":"org.lwjgl:lwjgl:3.2.1","rules":[{"action":"allow","os":{"name":"osx"}}]},
+                {"name":"org.lwjgl:lwjgl:3.2.2","rules":[{"action":"allow"},{"action":"disallow","os":{"name":"osx"}}]},
+                {"name":"org.lwjgl:lwjgl:3.1.6","natives":{"windows":"natives-windows"}}]}"#,
+        )
+        .unwrap();
+        let child: VersionJson = serde_json::from_str(r#"{"id":"fabric","inheritsFrom":"1.16.5","libraries":[{"name":"net.fabricmc:fabric-loader:0.16.9"}]}"#).unwrap();
+        let m = child.merge_onto(parent);
+        let names: Vec<_> = m.libraries.iter().filter(|l| l.allowed(&win())).map(|l| l.name.as_str()).collect();
+        assert_eq!(names, vec!["net.fabricmc:fabric-loader:0.16.9", "org.lwjgl:lwjgl:3.2.2", "org.lwjgl:lwjgl:3.1.6"]);
     }
 }

@@ -191,14 +191,24 @@ pub fn build_args(prep: &Prepared, paths: &Paths, o: &Options) -> Vec<String> {
     }
     args.push(json.main_class.clone().unwrap_or_else(|| "net.minecraft.client.main.Main".into()));
 
-    match (&json.arguments, &json.minecraft_arguments) {
-        (Some(a), _) if !a.game.is_empty() => push_args(&a.game, &env, &vars, &mut args),
-        (_, Some(legacy)) => args.extend(legacy.split_whitespace().map(|s| substitute(s, &vars))),
-        _ => {}
-    }
+    let legacy = match (&json.arguments, &json.minecraft_arguments) {
+        (Some(a), _) if !a.game.is_empty() => {
+            push_args(&a.game, &env, &vars, &mut args);
+            false
+        }
+        (_, Some(legacy)) => {
+            args.extend(legacy.split_whitespace().map(|s| substitute(s, &vars)));
+            true
+        }
+        _ => false,
+    };
     let modern_main = json.main_class.as_deref() != Some("net.minecraft.launchwrapper.Launch") || json.minecraft_arguments.as_deref().is_some_and(|m| m.contains("--username"));
     if o.fullscreen && modern_main {
         args.push("--fullscreen".into());
+    }
+    // У minecraftArguments (до 1.13) немає правила has_custom_resolution, а Main з 1.6 розуміє --width/--height.
+    if legacy && modern_main && !o.fullscreen {
+        args.extend(["--width".into(), o.resolution.0.to_string(), "--height".into(), o.resolution.1.to_string()]);
     }
     if let (Some((host, port)), false) = (&o.server, quick_play) {
         if modern_main {
@@ -253,11 +263,16 @@ pub fn kill(instance_id: &str) -> bool {
 /// і не дасть запустити ту саму збірку вдруге (два процеси в одному світі ламають його).
 pub const RUNNING_FILE: &str = ".running";
 
-fn java_alive(pid: u32) -> bool {
+fn java_alive(pid: u32, started: i64) -> bool {
     let mut sys = sysinfo::System::new();
     let p = sysinfo::Pid::from_u32(pid);
     sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[p]), true);
-    sys.process(p).is_some_and(|proc_| proc_.name().to_string_lossy().to_lowercase().contains("java"))
+    sys.process(p).is_some_and(|proc_| proc_.name().to_string_lossy().to_lowercase().contains("java") && same_start(proc_.start_time(), started))
+}
+
+/// Після перезавантаження ПК pid з `.running` може дістатися чужій Java — звіряємо час старту (0 — невідомо).
+fn same_start(start_secs: u64, started_ms: i64) -> bool {
+    start_secs == 0 || (start_secs as i64 * 1000 - started_ms).abs() < 60_000
 }
 
 /// Підхоплює гру, запущену попереднім сеансом лаунчера (без логу — лише стан і «Зупинити»).
@@ -265,14 +280,15 @@ pub fn adopt(ctx: &Ctx, instance_id: &str, instance_dir: &Path) {
     let marker = instance_dir.join(RUNNING_FILE);
     let Ok(v) = std::fs::read_to_string(&marker).map(|s| serde_json::from_str::<serde_json::Value>(&s).unwrap_or_default()) else { return };
     let pid = v["pid"].as_u64().unwrap_or(0) as u32;
-    if pid == 0 || get(instance_id).is_some() || !java_alive(pid) {
+    let started = v["started"].as_i64().unwrap_or(0);
+    if pid == 0 || get(instance_id).is_some() || !java_alive(pid, started) {
         let _ = std::fs::remove_file(&marker);
         return;
     }
     let game = Arc::new(Game {
         instance_id: instance_id.to_string(),
         pid,
-        started: v["started"].as_i64().unwrap_or_else(util::now_ms),
+        started,
         log: Mutex::new(VecDeque::new()),
         kill: tokio::sync::Notify::new(),
         killed: AtomicBool::new(false),
@@ -292,7 +308,7 @@ pub fn adopt(ctx: &Ctx, instance_id: &str, instance_dir: &Path) {
                     }
                 }
             }
-            if !java_alive(game.pid) {
+            if !java_alive(game.pid, game.started) {
                 break;
             }
         }
@@ -362,7 +378,8 @@ pub fn spawn(
                 child.wait().await
             }
         };
-        let _ = pump.await;
+        // Дочірній процес гри (успадкував stdout) може тримати канал відкритим і після її виходу.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), pump).await;
         let code = status.ok().and_then(|s| s.code());
         let killed = game2.killed.load(Ordering::Relaxed);
         let crash = if code.unwrap_or(0) != 0 && !killed { Some(crash_info(&game2, &game_dir)) } else { None };
@@ -400,7 +417,8 @@ async fn read_lines(stream: impl AsyncRead + Unpin, stderr: bool, tx: tokio::syn
 
 /// Збирає рядки пачками раз на 100 мс — інтерфейс не захлинається від тисяч подій.
 async fn pump_logs(ctx: Ctx, game: Arc<Game>, mut rx: tokio::sync::mpsc::UnboundedReceiver<(bool, Vec<u8>)>) {
-    let mut parser = logparse::Parser::default();
+    // Свій розбирач на кожен потік: рядки stderr приходять упереміш із багаторядковими подіями stdout.
+    let mut parsers: [logparse::Parser; 2] = Default::default();
     let mut batch: Vec<LogLine> = Vec::new();
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
     loop {
@@ -408,7 +426,7 @@ async fn pump_logs(ctx: Ctx, game: Arc<Game>, mut rx: tokio::sync::mpsc::Unbound
             msg = rx.recv() => match msg {
                 Some((stderr, bytes)) => {
                     let line = decode(&bytes);
-                    if let Some(mut l) = parser.feed(&line, stderr) {
+                    if let Some(mut l) = parsers[stderr as usize].feed(&line, stderr) {
                         if l.t == 0 {
                             l.t = util::now_ms();
                         }
@@ -424,7 +442,7 @@ async fn pump_logs(ctx: Ctx, game: Arc<Game>, mut rx: tokio::sync::mpsc::Unbound
 }
 
 /// Java 8 пише stderr у кодуванні системи (cp1251 на українській Windows), новіші — у UTF-8.
-fn decode(bytes: &[u8]) -> String {
+pub(crate) fn decode(bytes: &[u8]) -> String {
     if let Ok(s) = std::str::from_utf8(bytes) {
         return s.to_string();
     }
@@ -474,7 +492,8 @@ fn crash_info(game: &Game, game_dir: &Path) -> CrashInfo {
             .map(|(_, p)| p)
     };
     let report_path = newest(game_dir.join("crash-reports"), "crash-").or_else(|| newest(game_dir.to_path_buf(), "hs_err_pid"));
-    let report = report_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
+    // hs_err_pid пишеться в кодуванні системи (кирилиця в шляху) — read_to_string на ньому падає.
+    let report = report_path.as_ref().and_then(|p| std::fs::read(p).ok()).map(|b| String::from_utf8_lossy(&b).into_owned());
     let mut info = logparse::analyze(&log, report.as_deref());
     info.report_path = report_path.map(|p| p.display().to_string());
     info
@@ -497,5 +516,69 @@ mod tests {
         assert_eq!(substitute("${library_directory}/f.jar", &vars), "C:/L/f.jar");
         assert_eq!(substitute("${unknown}-${a}", &vars), "${unknown}-1");
         assert_eq!(substitute("tail ${", &vars), "tail ${");
+    }
+
+    /// Рядок stderr посеред XML-події stdout не має ні губитися, ні ламати подію.
+    #[tokio::test]
+    async fn streams_dont_mix() {
+        let ctx = Ctx { paths: Paths::new(std::env::temp_dir()), http: crate::net::client(), emit: Arc::new(|_, _| {}), concurrency: 1 };
+        let game = Arc::new(Game { instance_id: "t".into(), pid: 0, started: 0, log: Default::default(), kill: tokio::sync::Notify::new(), killed: AtomicBool::new(false) });
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        for (stderr, l) in [
+            (false, r#"<log4j:Event logger="x" timestamp="1" level="INFO" thread="main">"#),
+            (true, "java.lang.RuntimeException: boom"),
+            (false, "  <log4j:Message><![CDATA[hi]]></log4j:Message>"),
+            (false, "</log4j:Event>"),
+        ] {
+            tx.send((stderr, l.as_bytes().to_vec())).unwrap();
+        }
+        drop(tx);
+        pump_logs(ctx, game.clone(), rx).await;
+        let texts: Vec<_> = game.log.lock().unwrap().iter().map(|l| l.text.clone()).collect();
+        assert_eq!(texts, vec!["java.lang.RuntimeException: boom", "hi"]);
+    }
+
+    #[test]
+    fn pid_reuse() {
+        assert!(same_start(1_700_000_001, 1_700_000_000_500));
+        assert!(same_start(0, 1_700_000_000_500));
+        assert!(!same_start(1_700_090_000, 1_700_000_000_500));
+    }
+
+    fn opts(fullscreen: bool) -> Options {
+        Options {
+            game_dir: "g".into(),
+            natives_dir: "n".into(),
+            memory_mb: 1024,
+            jvm_args: vec![],
+            resolution: (1280, 720),
+            fullscreen,
+            server: None,
+            world: None,
+            auth: Auth { name: "A".into(), uuid: "u".into(), token: "0".into(), user_type: "legacy", xuid: "0".into() },
+        }
+    }
+
+    fn prep(json: &str) -> Prepared {
+        Prepared { json: serde_json::from_str(json).unwrap(), classpath: vec![], natives: vec![], asset_index: "x".into(), legacy_assets: None, log_config: None }
+    }
+
+    #[test]
+    fn window_size() {
+        let paths = Paths::new("r".into());
+        let count = |a: &[String]| a.iter().filter(|s| *s == "--width").count();
+        // Старі версії (minecraftArguments) не мають правила has_custom_resolution — розмір додаємо самі.
+        let legacy = prep(r#"{"id":"1.12.2","mainClass":"net.minecraft.client.main.Main","minecraftArguments":"--username ${auth_player_name}"}"#);
+        let a = build_args(&legacy, &paths, &opts(false));
+        assert!(a.ends_with(&["--width".into(), "1280".into(), "--height".into(), "720".into()]), "{a:?}");
+        assert_eq!(count(&build_args(&legacy, &paths, &opts(true))), 0);
+        let modern = prep(
+            r#"{"id":"1.21","mainClass":"net.minecraft.client.main.Main","arguments":{"game":["--username","${auth_player_name}",
+                {"rules":[{"action":"allow","features":{"has_custom_resolution":true}}],"value":["--width","${resolution_width}","--height","${resolution_height}"]}]}}"#,
+        );
+        assert_eq!(count(&build_args(&modern, &paths, &opts(false))), 1);
+        // До 1.6 (аплет через launchwrapper) — не чіпаємо.
+        let applet = prep(r#"{"id":"1.5.2","mainClass":"net.minecraft.launchwrapper.Launch","minecraftArguments":"${auth_player_name} ${auth_session}"}"#);
+        assert_eq!(count(&build_args(&applet, &paths, &opts(false))), 0);
     }
 }
