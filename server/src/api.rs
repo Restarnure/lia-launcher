@@ -1,4 +1,4 @@
-//! API ЛІЇ для лаунчера: друзі, статуси, збірки, стрічка. Акаунт — у account.rs.
+//! API ЛІЇ для лаунчера: друзі, статуси, збірки, стрічка. Акаунт у account.rs.
 use crate::ygg::hex;
 use crate::{bad, forbidden, internal, not_found, ApiErr, App, R, S};
 use axum::body::Bytes;
@@ -25,7 +25,7 @@ pub struct User {
     pub uuid: String,
     pub bio: String,
     pub email: Option<String>,
-    /// Пошту підтверджено (або пошта на сервері вимкнена — тоді підтверджувати нема чим).
+    /// Пошту підтверджено (або пошта на сервері вимкнена, і тоді підтверджувати нема чим).
     pub verified: bool,
 }
 
@@ -79,7 +79,7 @@ pub fn auth_any(app: &App, h: &HeaderMap) -> R<User> {
     token_user(app, crate::account::token_from(h)).ok_or_else(unauthorized)
 }
 
-/// Вхід з підтвердженою поштою — для друзів, збірок, світів і гри.
+/// Вхід з підтвердженою поштою. Потрібен для друзів, збірок, світів і гри.
 pub fn auth(app: &App, h: &HeaderMap) -> R<User> {
     let u = auth_any(app, h)?;
     if !u.verified {
@@ -113,7 +113,7 @@ enum Rel {
 fn relation(app: &App, me: i64, other: i64) -> Rel {
     let db = app.db.lock().unwrap();
     let get = |a: i64, b: i64| db.query_row("SELECT accepted FROM friends WHERE a = ?1 AND b = ?2", [a, b], |r| r.get::<_, i64>(0)).optional().ok().flatten();
-    // accepted: 1 — друзі, 0 — запит, -1 — запит відхилено (той, хто просив, про це не дізнається
+    // accepted: 1 це друзі, 0 запит, -1 запит відхилено (той, хто просив, про це не дізнається
     // і не може засипати повторними запитами).
     match (get(me, other), get(other, me)) {
         (Some(1), _) | (_, Some(1)) => Rel::Friends,
@@ -169,7 +169,7 @@ pub async fn friends(st: S, h: HeaderMap) -> R<Json<Value>> {
     Ok(Json(json!({ "friends": friends, "incoming": incoming, "outgoing": outgoing })))
 }
 
-/// Запит у друзі; якщо зустрічний запит уже є — це прийняття.
+/// Запит у друзі. Якщо зустрічний запит уже є, це прийняття.
 pub async fn friend_add(st: S, h: HeaderMap, Path(name): Path<String>) -> R<StatusCode> {
     let me = auth(&st, &h)?;
     let other = user_by(&st, "name", &name).ok_or_else(not_found)?;
@@ -183,7 +183,7 @@ pub async fn friend_add(st: S, h: HeaderMap, Path(name): Path<String>) -> R<Stat
             befriended(&st, &me, &other);
         }
         Rel::None => {
-            // Раніше відхилений запит від цього гравця — тепер я сам хочу дружити: просто приймаємо.
+            // Раніше відхилений запит від цього гравця, а тепер я сам хочу дружити: просто приймаємо.
             let revived = st.db.lock().unwrap().execute("UPDATE friends SET accepted = 1 WHERE a = ?1 AND b = ?2 AND accepted = -1", [other.id, me.id]).map_err(internal)?;
             if revived > 0 {
                 befriended(&st, &me, &other);
@@ -283,7 +283,7 @@ fn broadcast_presence(app: &App, u: &User) {
     }
 }
 
-/// Статус від лаунчера: онлайн / у грі (яка збірка) / відкритий світ. Адресу світу ставить сервер —
+/// Статус від лаунчера: онлайн / у грі (яка збірка) / відкритий світ. Адресу світу ставить сервер,
 /// лише якщо цей код ретранслятора справді належить гравцю.
 fn clean_presence(app: &App, u: &User, v: &Value) -> Value {
     let s = |x: &Value, n: usize| x.as_str().map(|s| s.chars().take(n).collect::<String>());
@@ -303,7 +303,7 @@ fn clean_presence(app: &App, u: &User, v: &Value) -> Value {
     }
     if let Some(code) = v["world"]["code"].as_str() {
         if app.relay.owner(code) == Some(u.id) {
-            // licensedOnly: хост грає з ліцензією без «Грати з друзями» — пірати в такий світ не зайдуть.
+            // licensedOnly: хост грає з ліцензією без «Грати з друзями», тож пірати в такий світ не зайдуть.
             out["world"] = json!({
                 "code": code,
                 "address": format!("{code}.{}:{}", app.cfg.play_domain, app.cfg.relay_port),
@@ -353,7 +353,7 @@ async fn session_ws(app: Arc<App>, u: User, token: String, sock: WebSocket) {
         let Ok(v) = serde_json::from_str::<Value>(&t) else { continue };
         if v["type"] == "presence" {
             let p = clean_presence(&app, &u, &v);
-            // Друзям — лише справжні зміни, а не кожне повідомлення (захист від засипання трафіком).
+            // Друзям надсилаємо лише справжні зміни, а не кожне повідомлення (захист від засипання трафіком).
             let same = app.presence.lock().unwrap().get(&u.id).is_some_and(|old| old["state"] == p["state"] && old["game"] == p["game"] && old["world"] == p["world"]);
             if !same {
                 app.presence.lock().unwrap().insert(u.id, p);
@@ -378,7 +378,7 @@ async fn session_ws(app: Arc<App>, u: User, token: String, sock: WebSocket) {
     }
 }
 
-/// Світ гравця закрився — прибрати його зі статусу.
+/// Світ гравця закрився, прибрати його зі статусу.
 pub fn world_closed(app: &App, user: i64, code: &str) {
     let changed = {
         let mut p = app.presence.lock().unwrap();
@@ -403,7 +403,7 @@ pub(crate) fn pack_visible(app: &App, me: &User, owner: i64, visibility: &str) -
     owner == me.id || visibility == "public" || relation(app, me.id, owner) == Rel::Friends
 }
 
-/// Збірки, які бачить `me`, з додатковою умовою `cond` (параметр ?2 — `arg`).
+/// Збірки, які бачить `me`, з додатковою умовою `cond` (параметр ?2 це `arg`).
 fn list_packs(app: &App, me: &User, cond: &str, arg: Option<i64>) -> R<Vec<Value>> {
     let rows: Vec<(String, i64, String, String, String, String, String, i64, i64, i64, String, bool, i64)> = {
         let db = app.db.lock().unwrap();
@@ -443,7 +443,7 @@ pub async fn packs(st: S, h: HeaderMap, Query(q): Query<HashMap<String, String>>
             let u = user_by(&st, "name", n).ok_or_else(not_found)?;
             list_packs(&st, &me, "p.owner = ?2", Some(u.id))?
         }
-        // Без фільтра — мої та друзів.
+        // Без фільтра показуємо мої та друзів.
         None => {
             let mut ids = friend_ids(&st, me.id);
             ids.push(me.id);
@@ -521,7 +521,7 @@ pub async fn feed(st: S, h: HeaderMap) -> R<Json<Value>> {
     };
     let mut out = vec![];
     for (id, user, kind, pack, data, created) in rows {
-        // Подія збірки, якої вже не видно (стала приватною або друг видалився), — пропускаємо.
+        // Подія збірки, якої вже не видно (стала приватною або друг видалився): пропускаємо.
         if let Some(p) = &pack {
             match pack_owner(&st, p) {
                 Ok((o, v)) if pack_visible(&st, &me, o, &v) => {}
