@@ -149,7 +149,7 @@ p {
 .app {
   display: grid;
   grid-template-rows: 42px 1fr;
-  grid-template-columns: 80px 1fr;
+  grid-template-columns: 88px 1fr;
   height: 100%;
   background:
     radial-gradient(900px 500px at -10% -20%, rgba(61, 123, 255, 0.11), transparent 60%),
@@ -215,7 +215,8 @@ p {
 
 .nav-item {
   position: relative;
-  width: 62px;
+  /* «Налаштування» займає ~78px, вужча кнопка лишала підпис за межами підсвітки. */
+  width: 80px;
   height: 58px;
   border-radius: 14px;
   display: flex;
@@ -242,7 +243,7 @@ p {
 .nav-item.active::before {
   content: "";
   position: absolute;
-  left: -9px;
+  left: -4px;
   top: 16px;
   bottom: 16px;
   width: 4px;
@@ -286,6 +287,8 @@ p {
   height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
+  /* Місце під смугу прокрутки є завжди, тож вміст не стрибає при перемиканні вкладок. */
+  scrollbar-gutter: stable;
   /* На ультрашироких моніторах вміст не розтягується далі 2200px — центруємо. */
   padding: 28px max(34px, calc((100% - 2200px) / 2)) 40px;
   animation: page-in 0.22s var(--ease);

@@ -62,7 +62,8 @@ const BRANDS: Record<string, string> = { fabric: "Fabric", forge: "Forge", neofo
 
 function catName(c: string) {
   if (BRANDS[c]) return BRANDS[c];
-  return getLang() === "uk" ? (CAT_UK[c] ?? c) : c.replace(/-/g, " ").replace(/^./, (x) => x.toUpperCase());
+  // Тег без перекладу (bukkit, cursed) хоча б з великої літери, а не сирим ідентифікатором.
+  return (getLang() === "uk" && CAT_UK[c]) || c.replace(/-/g, " ").replace(/^./, (x) => x.toUpperCase());
 }
 
 const KIND: Record<string, ContentKind> = { mod: "mods", resourcepack: "resourcepacks", shader: "shaderpacks" };
@@ -337,6 +338,10 @@ function ProjectModal(props: { hit: SearchHit; type: ProjectType; inst: Instance
   const [versions, setVersions] = useState<Json[] | null>(null);
   const [tab, setTab] = useState<"desc" | "versions">("desc");
   const [shot, setShot] = useState(0);
+  const [chan, setChan] = useState<"all" | "release" | "beta" | "alpha">("all");
+  const [gv, setGv] = useState("");
+  const [ld, setLd] = useState("");
+  const [limit, setLimit] = useState(50);
 
   useEffect(() => {
     api.project(hit.project_id).then(setProject).catch(fail);
@@ -353,6 +358,24 @@ function ProjectModal(props: { hit: SearchHit; type: ProjectType; inst: Instance
     const html = marked.parse(project.body as string, { async: false }) as string;
     return DOMPurify.sanitize(html, { FORBID_TAGS: ["style", "iframe", "form", "script"], FORBID_ATTR: ["style"] });
   }, [project]);
+
+  const [gameVersions, loaderList, channels] = useMemo(() => {
+    const g = new Set<string>();
+    const l = new Set<string>();
+    const c = new Set<string>();
+    for (const v of versions ?? []) {
+      (v.game_versions as string[]).forEach((x) => g.add(x));
+      (v.loaders as string[]).forEach((x) => l.add(x));
+      c.add(v.version_type);
+    }
+    // Спершу релізи гри від найновішого, снапшоти в кінці.
+    const rel = (x: string) => /^\d+(\.\d+)+$/.test(x);
+    const sorted = [...g].sort((a, b) => Number(rel(b)) - Number(rel(a)) || b.localeCompare(a, undefined, { numeric: true }));
+    return [sorted, [...l], (["release", "beta", "alpha"] as const).filter((x) => c.has(x))];
+  }, [versions]);
+  const shown = (versions ?? []).filter(
+    (v) => (chan === "all" || v.version_type === chan) && (!gv || (v.game_versions as string[]).includes(gv)) && (!ld || (v.loaders as string[]).includes(ld)),
+  );
 
   const gallery: string[] = (project?.gallery ?? []).map((g: Json) => g.url as string);
   const links: [string, string | undefined][] = [
@@ -458,29 +481,57 @@ function ProjectModal(props: { hit: SearchHit; type: ProjectType; inst: Instance
       ) : versions.length === 0 ? (
         <Empty title={t("browse.no_versions")} />
       ) : (
-        <div className="list">
-          {versions.slice(0, 60).map((v: Json) => (
-            <div key={v.id} className="list-row">
-              <span className={`badge ${v.version_type === "release" ? "green" : v.version_type === "beta" ? "yellow" : "red"}`}>{v.version_type}</span>
-              <div className="grow" style={{ minWidth: 0 }}>
-                <b className="ellipsis" style={{ display: "block" }}>
-                  {v.name || v.version_number}
-                </b>
-                <small className="faint ellipsis" style={{ display: "block" }}>
-                  {(v.game_versions as string[]).slice(-6).join(", ")} · {date(v.date_published)}
-                </small>
-              </div>
-              <div className="row" style={{ gap: 4 }}>
-                {(v.loaders as string[]).slice(0, 3).map((l) =>
-                  ["fabric", "quilt", "forge", "neoforge"].includes(l) ? <LoaderBadge key={l} loader={l as never} /> : <span key={l} className="badge">{l}</span>,
-                )}
-              </div>
-              <button className="btn sm" disabled={!canInstall || props.busy} onClick={() => props.onInstall(v.id)}>
-                <Download size={14} />
-              </button>
+        <>
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            {channels.length > 1 && (
+              <Seg value={chan} onChange={setChan} options={(["all", ...channels] as const).map((c) => ({ value: c, label: t(`browse.chan.${c}`) }))} />
+            )}
+            {gameVersions.length > 1 && (
+              <Select
+                value={gv}
+                className="ver-filter"
+                searchable={gameVersions.length > 10}
+                onChange={setGv}
+                options={[{ value: "", label: t("browse.all_game_versions") }, ...gameVersions.map((g) => ({ value: g, label: g }))]}
+              />
+            )}
+            {loaderList.length > 1 && (
+              <Select value={ld} className="ver-filter" onChange={setLd} options={[{ value: "", label: t("browse.all_loaders") }, ...loaderList.map((l) => ({ value: l, label: catName(l) }))]} />
+            )}
+          </div>
+          {shown.length === 0 ? (
+            <Empty title={t("browse.nothing")} />
+          ) : (
+            <div className="list">
+              {shown.slice(0, limit).map((v: Json) => (
+                <div key={v.id} className="list-row">
+                  <span className={`badge vt ${v.version_type === "release" ? "green" : v.version_type === "beta" ? "yellow" : "red"}`}>{t(`browse.vt.${v.version_type as "release" | "beta" | "alpha"}`)}</span>
+                  <div className="grow" style={{ minWidth: 0 }}>
+                    <b className="ellipsis" style={{ display: "block" }}>
+                      {v.name || v.version_number}
+                    </b>
+                    <small className="faint ellipsis" style={{ display: "block" }}>
+                      {(v.game_versions as string[]).slice(-6).join(", ")} · {date(v.date_published)}
+                    </small>
+                  </div>
+                  <div className="row" style={{ gap: 4 }}>
+                    {(v.loaders as string[]).slice(0, 3).map((l) =>
+                      ["fabric", "quilt", "forge", "neoforge"].includes(l) ? <LoaderBadge key={l} loader={l as never} /> : <span key={l} className="badge">{catName(l)}</span>,
+                    )}
+                  </div>
+                  <button className="btn sm" disabled={!canInstall || props.busy} onClick={() => props.onInstall(v.id)}>
+                    <Download size={14} />
+                  </button>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          )}
+          {shown.length > limit && (
+            <button className="btn" style={{ alignSelf: "center" }} onClick={() => setLimit((n) => n + 50)}>
+              {t("browse.load_more")}
+            </button>
+          )}
+        </>
       )}
     </Modal>
   );

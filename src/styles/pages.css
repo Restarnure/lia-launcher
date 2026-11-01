@@ -911,6 +911,16 @@
   width: 210px;
 }
 
+.ver-filter {
+  width: 200px;
+}
+
+/* Однакова ширина, щоб назви версій стояли рівно під різними мітками. */
+.badge.vt {
+  min-width: 52px;
+  justify-content: center;
+}
+
 .chips {
   display: flex;
   flex-wrap: wrap;
@@ -1054,7 +1064,8 @@
 
 .gallery > img {
   width: 100%;
-  max-height: 380px;
+  /* На низькому вікні скріншот не має витісняти опис і версії за край. */
+  max-height: min(380px, 40vh);
   object-fit: contain;
   border-radius: 14px;
   background: #06090e;

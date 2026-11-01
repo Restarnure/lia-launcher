@@ -756,6 +756,11 @@ a.hint:hover {
   gap: 16px;
 }
 
+/* Інакше блок з overflow: hidden (як .list) стискається до висоти вікна й обрізає рядки замість прокрутки. */
+.modal-body > * {
+  flex-shrink: 0;
+}
+
 .modal-foot {
   display: flex;
   justify-content: flex-end;
@@ -931,7 +936,7 @@ a.hint:hover {
 
 .drop-zone {
   position: fixed;
-  inset: 42px 0 0 80px;
+  inset: 42px 0 0 88px;
   z-index: 250;
   display: grid;
   place-items: center;

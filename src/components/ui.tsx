@@ -110,11 +110,17 @@ function usePopover(open: boolean, anchor: React.RefObject<HTMLElement | null>, 
       if (!pop.current?.contains(e.target as Node) && !anchor.current?.contains(e.target as Node)) close();
     };
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
+    // Список стоїть на фіксованому місці, тож після прокрутки сторінки чи зміни розміру він відірвався б від кнопки.
+    const onScroll = (e: Event) => !pop.current?.contains(e.target as Node) && close();
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", close);
     return () => {
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", close);
     };
   }, [open, close, anchor]);
   return { pos, pop };
