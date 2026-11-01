@@ -39,7 +39,7 @@ impl AppState {
             let _ = accounts::save(&list);
         }
         AppState {
-            // Перші три — типові прапорці Tauri; --lang задає мову веб-сторінок (вхід Microsoft).
+            // Перші три це типові прапорці Tauri, а --lang задає мову веб-сторінок (вхід Microsoft).
             browser_args: format!("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --lang={lang}"),
             settings: RwLock::new(settings),
             http: crate::net::client(),
@@ -122,7 +122,7 @@ pub fn startup(state: &AppState) {
         for inst in instances::list(&p) {
             launch::adopt(&ctx, &inst.id, &p.instance_dir(&inst.id));
         }
-        // Нативні бібліотеки запущених ігор зайняті — їх не чіпаємо.
+        // Нативні бібліотеки запущених ігор зайняті, тож їх не чіпаємо.
         let running: Vec<String> = launch::running().iter().map(|g| format!("{}-", g.instance_id)).collect();
         for e in std::fs::read_dir(p.natives_root()).into_iter().flatten().flatten() {
             let name = e.file_name().to_string_lossy().to_string();
@@ -139,7 +139,7 @@ pub fn startup(state: &AppState) {
 pub async fn app_info(state: S<'_>) -> Result<Value> {
     let ctx = state.ctx();
     Ok(json!({
-        // Версія з tauri.conf.json — саме її порівнює автооновлення.
+        // Версію беремо з tauri.conf.json, саме її порівнює автооновлення.
         "version": state.app.package_info().version.to_string(),
         "dataDir": ctx.paths.root,
         "configDir": Paths::config_home(),
@@ -166,7 +166,7 @@ pub async fn open_url(state: S<'_>, url: String) -> Result<()> {
     state.app.opener().open_url(url, None::<&str>).map_err(|e| err("open", e.to_string()))
 }
 
-/// Відкриває теку/файл у провіднику — лише в межах даних лаунчера.
+/// Відкриває теку чи файл у провіднику, але лише в межах даних лаунчера.
 #[tauri::command]
 pub async fn open_path(state: S<'_>, path: String, reveal: Option<bool>) -> Result<()> {
     let p = PathBuf::from(&path);
@@ -464,14 +464,14 @@ async fn selected_account(state: &AppState) -> Result<Account> {
     match accounts::ensure_fresh(&state.http, &client_id, acc).await {
         Ok(true) => accounts::save(&list)?,
         Ok(false) => {}
-        // Без мережі граємо зі старим токеном: одиночна гра працює, онлайн-сервери — ні.
+        // Без мережі граємо зі старим токеном: одиночна гра працює, онлайн-сервери ні.
         Err(Error::Net(_)) => {}
         Err(e) => return Err(e),
     }
     Ok(list[idx].clone())
 }
 
-/// `friends` — «Грати з друзями»: ліцензія входить через ЛІЮ, щоб у її LAN-світ могли зайти й пірати
+/// `friends` вмикає «Грати з друзями»: ліцензія входить через ЛІЮ, щоб у її LAN-світ могли зайти й пірати
 /// (ціною офіційних онлайн-серверів у цьому запуску). Офлайн-нік з ЛІЯ ID входить через ЛІЮ завжди.
 pub async fn launch_instance(state: Arc<AppState>, id: String, server: Option<(String, u16)>, world: Option<String>, friends: bool) -> Result<()> {
     let ctx = state.ctx();
@@ -535,7 +535,7 @@ pub async fn launch_instance(state: Arc<AppState>, id: String, server: Option<(S
                     via_lia = true;
                 }
                 Err(e) if friends => return Err(e),
-                // Офлайн-нік без ЛІЇ (немає мережі, нік зайнятий) — гра все одно запускається.
+                // Офлайн-нік без ЛІЇ (немає мережі, нік зайнятий), але гра все одно запускається.
                 Err(e) => {
                     state.app.emit("lia-warning", json!({ "message": e.to_string() })).ok();
                 }
@@ -589,7 +589,7 @@ pub async fn launch_instance(state: Arc<AppState>, id: String, server: Option<(S
                     let _ = w.minimize();
                 }
                 "close" => {
-                    // Гра — окремий процес і працює далі без лаунчера.
+                    // Гра це окремий процес, вона працює далі й без лаунчера.
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     state.app.exit(0);
                 }
@@ -615,7 +615,7 @@ pub async fn server_ping(host: String, port: Option<u16>) -> Result<servers::Sta
 /// «Грати на Shotam»: своя збірка під версію сервера з потрібними модами і швидкий вхід.
 #[tauri::command]
 pub async fn featured_play(state: S<'_>) -> Result<String> {
-    // Спершу акаунт — щоб не качати збірку, з якою однаково не можна зайти.
+    // Спершу акаунт, щоб не качати збірку, з якою однаково не можна зайти.
     if state.accounts.lock().await.is_empty() {
         return Err(err("no_account", "додайте акаунт, щоб грати"));
     }
@@ -634,7 +634,7 @@ pub async fn featured_play(state: S<'_>) -> Result<String> {
             i
         }
     };
-    // Сервер перейшов на іншу версію — переводимо збірку слідом.
+    // Сервер перейшов на іншу версію, тож переводимо збірку слідом.
     if inst.mc_version != f.mc_version || inst.loader != f.loader {
         inst.mc_version = f.mc_version.clone();
         inst.loader = f.loader.clone();
@@ -646,7 +646,7 @@ pub async fn featured_play(state: S<'_>) -> Result<String> {
         let task = ctx.task_for(f.name.clone(), &inst.id);
         let mods_dir = ctx.paths.game_dir(&inst.id).join("mods");
         for slug in &f.mods {
-            // Без модів (голосовий чат) грати однаково можна — помилку не блокуємо.
+            // Без модів (голосовий чат) грати однаково можна, тому помилку не блокуємо.
             if let Ok(p) = modrinth::project(&ctx, slug).await {
                 let pid = p["id"].as_str().unwrap_or("").to_string();
                 let index = content::Index::load(&ctx.paths, &inst.id);
@@ -658,7 +658,7 @@ pub async fn featured_play(state: S<'_>) -> Result<String> {
         }
         task.finish::<()>(&Ok(()));
     }
-    // Сервер у списку «Мультиплеєр» — навіть якщо гравець його звідти прибрав.
+    // Сервер у списку «Мультиплеєр», навіть якщо гравець його звідти прибрав.
     servers::seed_servers(&ctx.paths.game_dir(&inst.id), &f);
     state.app.emit("instances-changed", ()).ok();
     let id = inst.id.clone();
@@ -703,7 +703,7 @@ pub async fn content_add(state: S<'_>, id: String, kind: String, files: Vec<Stri
     content::add_files(&inst_paths(&state, &id)?, &id, Kind::parse(&kind)?, &files)
 }
 
-/// Дізнається на Modrinth, що за файли лежать у збірці (назви, іконки) — для доданих вручну.
+/// Дізнається на Modrinth, що за файли лежать у збірці (назви, іконки). Потрібно для доданих вручну.
 #[tauri::command]
 pub async fn content_identify(state: S<'_>, id: String, kind: String) -> Result<Vec<content::Item>> {
     let ctx = state.ctx();
@@ -815,7 +815,7 @@ pub async fn screenshots_list(state: S<'_>, id: String) -> Result<Vec<content::S
     Ok(content::screenshots(&inst_paths(&state, &id)?, &id))
 }
 
-/// Видалення світу чи скріншота — у кошик.
+/// Видалення світу чи скріншота в кошик.
 #[tauri::command]
 pub async fn game_file_trash(state: S<'_>, id: String, rel: String) -> Result<()> {
     if rel.trim().is_empty() {
@@ -1099,11 +1099,11 @@ fn png_from_data_url(data: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Зберегти скін із редактора. `replace` — скін бібліотеки, який редагували: його замінює новий.
+/// Зберегти скін із редактора. `replace` це скін бібліотеки, який редагували: його замінює новий.
 #[tauri::command]
 pub async fn skin_save_png(data: String, name: String, slim: bool, replace: Option<String>) -> Result<skinlib::SkinView> {
     let view = skinlib::add(&png_from_data_url(&data)?, &name, Some(slim), "editor")?;
-    // Той самий вміст — той самий id; інакше прибираємо стару версію.
+    // Той самий вміст дає той самий id, інакше прибираємо стару версію.
     skinlib::update(&view.skin.id, Some(name), Some(slim))?;
     if let Some(old) = replace.filter(|o| *o != view.skin.id) {
         skinlib::remove(&old)?;
@@ -1183,7 +1183,7 @@ pub async fn news_list(state: S<'_>) -> Result<Vec<news::Entry>> {
 
 // ---------------------------------------------------------------- ЛІЯ ID і друзі
 
-/// Вхід (або реєстрація) у ЛІЯ ID — акаунт лаунчера, окремо від ігрових акаунтів.
+/// Вхід (або реєстрація) у ЛІЯ ID, акаунт лаунчера, окремий від ігрових акаунтів.
 #[tauri::command]
 pub async fn lia_login(state: S<'_>, name: String, password: String, email: Option<String>) -> Result<Value> {
     let s = crate::lia::login(&state.http, &name, &password, email.as_deref()).await?;
@@ -1195,7 +1195,7 @@ pub async fn lia_login(state: S<'_>, name: String, password: String, email: Opti
 #[tauri::command]
 pub async fn lia_logout(state: S<'_>) -> Result<()> {
     if let Some(s) = crate::lia::session() {
-        // Відкликати токен на сервері — не обов'язково, якщо мережі немає.
+        // Відкликати токен на сервері не обов'язково, якщо мережі немає.
         let _ = crate::lia::call(&state.http, reqwest::Method::POST, "/api/logout", Some(&s.token), None).await;
     }
     crate::lia::set_session(None)?;
@@ -1209,7 +1209,7 @@ fn lia_token() -> Result<String> {
 
 async fn lia_call(state: &AppState, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
     let r = crate::lia::call(&state.http, method, path, Some(&lia_token()?), body).await;
-    // Токен відкликано (вийшли на іншому ПК, змінили пароль) — сесія тут більше не дійсна.
+    // Токен відкликано (вийшли на іншому ПК, змінили пароль), тож сесія тут більше не дійсна.
     if matches!(&r, Err(Error::Coded { code: "lia_auth", .. })) {
         let _ = crate::lia::set_session(None);
         state.app.emit("lia-session", ()).ok();
@@ -1217,7 +1217,7 @@ async fn lia_call(state: &AppState, method: reqwest::Method, path: &str, body: O
     r
 }
 
-/// Сесія ЛІЯ ID для інтерфейсу (WebSocket статусів). `null` — не увійшли.
+/// Сесія ЛІЯ ID для інтерфейсу (WebSocket статусів). `null`, якщо не увійшли.
 #[tauri::command]
 pub async fn lia_session() -> Result<Value> {
     Ok(match crate::lia::session() {
@@ -1241,7 +1241,7 @@ pub async fn lia_request(state: S<'_>, method: String, path: String, body: Optio
     };
     let delete_me = m == reqwest::Method::DELETE && path == "/api/me";
     let r = lia_call(&state, m, &path, body).await?;
-    // Акаунт видалено — на цьому ПК більше нема куди входити.
+    // Акаунт видалено, на цьому ПК більше нема куди входити.
     if delete_me {
         crate::lia::set_session(None)?;
         state.app.emit("lia-session", ()).ok();
@@ -1353,7 +1353,7 @@ pub async fn lia_share_world(state: S<'_>, instance_id: String, port: u16) -> Re
         crate::lia::unshare(&instance_id);
         return Err(Error::Cancelled);
     }
-    // Без входу через ЛІЮ світ перевіряє гостей через Mojang — піратам туди не зайти.
+    // Без входу через ЛІЮ світ перевіряє гостей через Mojang, і піратам туди не зайти.
     Ok(json!({ "code": code, "address": address, "licensedOnly": !crate::lia::is_lia_game(&instance_id) }))
 }
 
