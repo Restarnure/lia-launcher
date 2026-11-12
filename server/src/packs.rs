@@ -231,10 +231,13 @@ pub struct Hashes {
 /// Яких файлів ще немає на сервері. Наявні «освіжаємо», щоб прибирання не забрало їх до публікації.
 pub async fn blobs_missing(st: S, h: HeaderMap, Json(b): Json<Hashes>) -> R<Json<Value>> {
     let me = auth(&st, &h)?;
+    st.limit(format!("missing:{}", me.id), 300, Duration::from_secs(3600))?;
     if b.hashes.len() > FILES_MAX {
         return Err(bad("забагато файлів"));
     }
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
+    // Одна транзакція на весь список: тисячі окремих записів тримали б базу зайнятою для всіх.
+    let db = db.transaction().map_err(internal)?;
     let mut touch = db.prepare("UPDATE blobs SET created = ?3 WHERE owner = ?1 AND sha1 = ?2").map_err(internal)?;
     let now = crate::now();
     let mut missing = vec![];
@@ -243,6 +246,8 @@ pub async fn blobs_missing(st: S, h: HeaderMap, Json(b): Json<Hashes>) -> R<Json
             missing.push(s);
         }
     }
+    drop(touch);
+    db.commit().map_err(internal)?;
     Ok(Json(json!({ "missing": missing })))
 }
 
@@ -255,6 +260,34 @@ impl Drop for TmpFile {
     }
 }
 
+/// Не більше 4 завантажень одночасно на акаунт: квота рахується після запису, тож сотні
+/// завислих завантажень заповнили б диск тимчасовими файлами.
+struct UploadSlot(std::sync::Arc<crate::App>, i64);
+
+impl UploadSlot {
+    fn take(st: &S, user: i64) -> R<UploadSlot> {
+        let mut m = st.uploads.lock().unwrap();
+        let n = m.entry(user).or_insert(0);
+        if *n >= 4 {
+            return Err(crate::ApiErr(StatusCode::TOO_MANY_REQUESTS, "TooManyRequests", "забагато завантажень одночасно".into()));
+        }
+        *n += 1;
+        Ok(UploadSlot(st.0.clone(), user))
+    }
+}
+
+impl Drop for UploadSlot {
+    fn drop(&mut self) {
+        let mut m = self.0.uploads.lock().unwrap();
+        if let Some(n) = m.get_mut(&self.1) {
+            *n -= 1;
+            if *n == 0 {
+                m.remove(&self.1);
+            }
+        }
+    }
+}
+
 /// Приймає один файл у тимчасовий файл (не в пам'ять), звіряє SHA-1 і ставить на місце.
 pub async fn blob_put(st: S, h: HeaderMap, Path(sha): Path<String>, body: Body) -> R<StatusCode> {
     let me = auth(&st, &h)?;
@@ -262,6 +295,7 @@ pub async fn blob_put(st: S, h: HeaderMap, Path(sha): Path<String>, body: Body) 
         return Err(bad("неправильний хеш файлу"));
     }
     st.limit(format!("blob:{}", me.id), 20_000, Duration::from_secs(3600))?;
+    let _slot = UploadSlot::take(&st, me.id)?;
     let dir = blob_dir(&st, me.id);
     tokio::fs::create_dir_all(&dir).await.map_err(internal)?;
     let tmp = TmpFile(dir.join(format!("{sha}.{}.tmp", hex(&rand::random::<[u8; 6]>()))));

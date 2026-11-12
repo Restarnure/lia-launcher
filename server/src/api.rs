@@ -133,7 +133,8 @@ pub(crate) fn friend_ids(app: &App, me: i64) -> Vec<i64> {
 pub(crate) fn notify(app: &App, user: i64, msg: &Value) {
     if let Some(list) = app.sockets.lock().unwrap().get_mut(&user) {
         let s = msg.to_string();
-        list.retain(|tx| tx.send(s.clone()).is_ok());
+        // Повна черга (клієнт не читає): повідомлення губиться, а пам'ять не росте. Закритий канал прибираємо.
+        list.retain(|tx| !matches!(tx.try_send(s.clone()), Err(tokio::sync::mpsc::error::TrySendError::Closed(_))));
     }
 }
 
@@ -216,7 +217,8 @@ pub async fn friend_remove(st: S, h: HeaderMap, Path(name): Path<String>) -> R<S
         st.db.lock().unwrap().execute("UPDATE friends SET accepted = -1 WHERE a = ?1 AND b = ?2", [other.id, me.id]).map_err(internal)?;
         return Ok(StatusCode::NO_CONTENT);
     }
-    st.db.lock().unwrap().execute("DELETE FROM friends WHERE (a = ?1 AND b = ?2) OR (a = ?2 AND b = ?1)", [me.id, other.id]).map_err(internal)?;
+    // Свій відхилений запит не прибирається: інакше його можна було б надіслати знову.
+    st.db.lock().unwrap().execute("DELETE FROM friends WHERE (a = ?1 AND b = ?2 AND accepted != -1) OR (a = ?2 AND b = ?1)", [me.id, other.id]).map_err(internal)?;
     notify(&st, other.id, &json!({ "type": "friends" }));
     Ok(StatusCode::NO_CONTENT)
 }
@@ -255,7 +257,8 @@ pub async fn user(st: S, h: HeaderMap, Path(name): Path<String>) -> R<Json<Value
 
 #[derive(Deserialize)]
 pub struct WsQuery {
-    token: String,
+    /// Лаунчери до 1.1.7 кладуть токен в адресу (а вона осідає в журналах проксі). Нові шлють його першим повідомленням.
+    token: Option<String>,
     /// Версія лаунчера: WebSocket відкриває вікно, і User-Agent там браузерний.
     v: Option<String>,
 }
@@ -264,15 +267,47 @@ pub async fn ws(st: S, Query(q): Query<WsQuery>, up: WebSocketUpgrade) -> R<Resp
     if q.v.as_deref().and_then(crate::parse_version).is_none_or(|v| v < st.cfg.min_launcher) {
         return Err(crate::outdated());
     }
-    let u = token_user(&st, &q.token).filter(|u| u.verified).ok_or_else(|| forbidden("Invalid token."))?;
-    // Кожне з'єднання тримає буфери; без межі один акаунт вичерпав би пам'ять тисячами з'єднань.
-    if st.sockets.lock().unwrap().get(&u.id).is_some_and(|l| l.len() >= 16) {
-        return Err(ApiErr(StatusCode::TOO_MANY_REQUESTS, "TooManyRequests", "забагато відкритих з'єднань".into()));
-    }
+    let pre = match &q.token {
+        Some(t) => Some(ws_user(&st, t)?),
+        None => None,
+    };
     let app = st.0.clone();
     // Статус займає кількасот байтів, а типові для axum 64 МБ на повідомлення (16 МБ на кадр) дозволили б
     // вичерпати пам'ять кількома повідомленнями.
-    Ok(up.max_message_size(64 * 1024).max_frame_size(64 * 1024).on_upgrade(move |sock| session_ws(app, u, q.token, sock)))
+    Ok(up.max_message_size(64 * 1024).max_frame_size(64 * 1024).on_upgrade(move |mut sock| async move {
+        let (u, token) = match (pre, q.token) {
+            (Some(u), Some(t)) => (u, t),
+            _ => {
+                let first = tokio::time::timeout(Duration::from_secs(10), sock.next()).await;
+                let Ok(Some(Ok(Message::Text(t)))) = first else { return };
+                let v: Value = serde_json::from_str(&t).unwrap_or_default();
+                let token = v["token"].as_str().unwrap_or("").to_string();
+                match ws_user(&app, &token) {
+                    Ok(u) if v["type"] == "auth" => (u, token),
+                    _ => return,
+                }
+            }
+        };
+        session_ws(app, u, token, sock).await
+    }))
+}
+
+fn ws_user(app: &App, token: &str) -> R<User> {
+    let u = token_user(app, token).filter(|u| u.verified).ok_or_else(|| forbidden("Invalid token."))?;
+    // Кожне з'єднання тримає буфери; без межі один акаунт вичерпав би пам'ять тисячами з'єднань.
+    if app.sockets.lock().unwrap().get(&u.id).is_some_and(|l| l.len() >= 16) {
+        return Err(ApiErr(StatusCode::TOO_MANY_REQUESTS, "TooManyRequests", "забагато відкритих з'єднань".into()));
+    }
+    Ok(u)
+}
+
+/// Одноразовий квиток для ретранслятора. З'єднання з ним не шифроване, тож токен сесії туди не йде.
+pub async fn relay_ticket(st: S, h: HeaderMap) -> R<Json<Value>> {
+    let me = auth(&st, &h)?;
+    st.limit(format!("ticket:{}", me.id), 60, Duration::from_secs(3600))?;
+    let ticket = hex(&rand::random::<[u8; 16]>());
+    st.tickets.lock().unwrap().insert(ticket.clone(), (me.id, std::time::Instant::now()));
+    Ok(Json(json!({ "ticket": ticket })))
 }
 
 fn broadcast_presence(app: &App, u: &User) {
@@ -316,13 +351,14 @@ fn clean_presence(app: &App, u: &User, v: &Value) -> Value {
 
 async fn session_ws(app: Arc<App>, u: User, token: String, sock: WebSocket) {
     let (mut tx, mut rx) = sock.split();
-    let (out, mut inbox) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // Черга з межею: друг, який не читає сокет, не накопичує повідомлення в пам'яті сервера.
+    let (out, mut inbox) = tokio::sync::mpsc::channel::<String>(1024);
     app.sockets.lock().unwrap().entry(u.id).or_default().push(out.clone());
     // Статуси друзів, які вже онлайн.
     for f in friend_ids(&app, u.id) {
         let p = app.presence.lock().unwrap().get(&f).cloned();
         if let (Some(p), Some(fu)) = (p, user_by_id(&app, f)) {
-            let _ = out.send(json!({ "type": "presence", "name": fu.name, "presence": p }).to_string());
+            let _ = out.try_send(json!({ "type": "presence", "name": fu.name, "presence": p }).to_string());
         }
     }
     let writer = tokio::spawn(async move {
@@ -355,7 +391,8 @@ async fn session_ws(app: Arc<App>, u: User, token: String, sock: WebSocket) {
             let p = clean_presence(&app, &u, &v);
             // Друзям надсилаємо лише справжні зміни, а не кожне повідомлення (захист від засипання трафіком).
             let same = app.presence.lock().unwrap().get(&u.id).is_some_and(|old| old["state"] == p["state"] && old["game"] == p["game"] && old["world"] == p["world"]);
-            if !same {
+            // І не частіше 30 змін за хвилину: чергування статусів теж було б засипанням.
+            if !same && app.limit(format!("presence:{}", u.id), 30, Duration::from_secs(60)).is_ok() {
                 app.presence.lock().unwrap().insert(u.id, p);
                 broadcast_presence(&app, &u);
             }

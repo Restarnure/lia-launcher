@@ -43,10 +43,14 @@ pub struct App {
     pub challenges: Mutex<HashMap<String, (i64, Instant)>>,
     pub http: reqwest::Client,
     /// Відкриті WebSocket-и гравців: id користувача → канали.
-    pub sockets: Mutex<HashMap<i64, Vec<mpsc::UnboundedSender<String>>>>,
+    pub sockets: Mutex<HashMap<i64, Vec<mpsc::Sender<String>>>>,
     pub presence: Mutex<HashMap<i64, Value>>,
     pub limits: Mutex<HashMap<String, (u32, Instant)>>,
     pub relay: relay::Hub,
+    /// Одноразові квитки ретранслятора: квиток → (користувач, коли). Токен сесії відкритим TCP не ходить.
+    pub tickets: Mutex<HashMap<String, (i64, Instant)>>,
+    /// Скільки файлів кожен користувач завантажує просто зараз.
+    pub uploads: Mutex<HashMap<i64, u32>>,
 }
 
 pub type S = axum::extract::State<Arc<App>>;
@@ -156,6 +160,8 @@ async fn main() {
         presence: Mutex::new(HashMap::new()),
         limits: Mutex::new(HashMap::new()),
         relay: relay::Hub::default(),
+        tickets: Mutex::new(HashMap::new()),
+        uploads: Mutex::new(HashMap::new()),
     });
     packs::migrate(&app);
 
@@ -166,7 +172,9 @@ async fn main() {
             tokio::time::sleep(Duration::from_secs(60)).await;
             a.joins.lock().unwrap().retain(|_, v| v.2.elapsed() < Duration::from_secs(60));
             a.challenges.lock().unwrap().retain(|_, v| v.1.elapsed() < Duration::from_secs(300));
-            a.limits.lock().unwrap().retain(|_, v| v.1.elapsed() < Duration::from_secs(3600));
+            a.tickets.lock().unwrap().retain(|_, v| v.1.elapsed() < relay::TICKET_TTL);
+            // Найдовше вікно ліміту це доба (листи, спроби скинути пароль).
+            a.limits.lock().unwrap().retain(|_, v| v.1.elapsed() < Duration::from_secs(24 * 3600));
         }
     });
 
@@ -215,6 +223,7 @@ async fn main() {
         .route("/api/blobs/{sha1}", put(packs::blob_put))
         .route("/api/packs/{id}/subscribe", post(api::pack_subscribe).delete(api::pack_unsubscribe))
         .route("/api/feed", get(api::feed))
+        .route("/api/relay/ticket", post(api::relay_ticket))
         .route("/api/ws", get(api::ws))
         .route("/health", get(|| async { "ok" }))
         .layer(axum::middleware::from_fn_with_state(app.clone(), gate))

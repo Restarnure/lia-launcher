@@ -161,6 +161,10 @@ pub struct RegisterReq {
     device: Option<String>,
 }
 
+fn is_conflict(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation)
+}
+
 pub async fn register(st: S, h: HeaderMap, Json(r): Json<RegisterReq>) -> R<Json<Value>> {
     if !valid_name(&r.name) {
         return Err(bad("нік: 3–16 символів, латинські літери, цифри та _"));
@@ -182,8 +186,24 @@ pub async fn register(st: S, h: HeaderMap, Json(r): Json<RegisterReq>) -> R<Json
         "INSERT INTO users (name, uuid, pass, created, email, email_verified) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![r.name, uuid, pass, crate::now(), email, verified as i64],
     );
+    // Пошту, яку хтось зайняв і за добу не підтвердив, віддаємо тому, хто реєструється з нею зараз.
+    let res = match res {
+        Err(e) if is_conflict(&e) => {
+            let db = st.db.lock().unwrap();
+            let stale: Option<i64> = db.query_row("SELECT id FROM users WHERE email = ?1 AND email_verified = 0 AND created < ?2", params![email, crate::now() - 24 * 3600_000], |r| r.get(0)).optional().map_err(internal)?;
+            match stale {
+                Some(id) => {
+                    db.execute("UPDATE users SET email = NULL WHERE id = ?1", [id]).map_err(internal)?;
+                    db.execute("DELETE FROM codes WHERE user = ?1", [id]).map_err(internal)?;
+                    db.execute("INSERT INTO users (name, uuid, pass, created, email, email_verified) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![r.name, uuid, pass, crate::now(), email, verified as i64])
+                }
+                None => Err(e),
+            }
+        }
+        r => r,
+    };
     if let Err(e) = res {
-        if matches!(e, rusqlite::Error::SqliteFailure(ref f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation) {
+        if is_conflict(&e) {
             let taken_email = st.db.lock().unwrap().query_row("SELECT 1 FROM users WHERE email = ?1", [&email], |_| Ok(())).is_ok();
             return Err(ApiErr(StatusCode::CONFLICT, "Taken", if taken_email { "ця пошта вже прив'язана до іншого ЛІЯ ID" } else { "цей нік уже зайнятий" }.into()));
         }
@@ -257,7 +277,7 @@ pub async fn login(st: S, h: HeaderMap, Json(r): Json<LoginReq>) -> R<Json<Value
     let device = device_name(r.device.as_deref());
     // Лист про вхід з пристрою, з якого раніше не входили.
     let known: bool = st.db.lock().unwrap().query_row("SELECT 1 FROM tokens WHERE user = ?1 AND device = ?2 AND profile IS NULL", params![id, device], |_| Ok(())).is_ok();
-    if !known && u.verified {
+    if !known && u.verified && st.limit(format!("mail:{id}"), 5, Duration::from_secs(3600)).is_ok() {
         if let Some(e) = &u.email {
             mail::send(&st, e, "Новий вхід у ЛІЯ ID", &[format!("{}, у ваш ЛІЯ ID увійшли з пристрою «{device}».", u.name), "Якщо це були не ви, змініть пароль і вийдіть з усіх пристроїв у лаунчері (Акаунти → ЛІЯ ID).".into()]);
         }
@@ -335,6 +355,10 @@ pub struct EmailReq {
 pub async fn change_email(st: S, h: HeaderMap, Json(r): Json<EmailReq>) -> R<StatusCode> {
     let u = api::auth_any(&st, &h)?;
     st.limit(format!("mail:{}", u.id), 5, Duration::from_secs(3600))?;
+    // Непідтверджений акаунт не має слати коди на будь-які адреси: три спроби на добу вистачить, щоб виправити помилку.
+    if !u.verified {
+        st.limit(format!("mailnew:{}", u.id), 3, Duration::from_secs(24 * 3600))?;
+    }
     api::check_password(&st, &u.name, &r.password)?;
     let email = r.email.trim().to_lowercase();
     if !valid_email(&email) {
@@ -394,7 +418,10 @@ pub async fn reset(st: S, h: HeaderMap, Json(r): Json<ResetReq>) -> R<StatusCode
     valid_password(&r.password, login)?;
     let id = st.db.lock().unwrap().query_row("SELECT id FROM users WHERE name = ?1 OR email = ?2", params![login, login.to_lowercase()], |r| r.get::<_, i64>(0)).optional().map_err(internal)?;
     let u = id.and_then(|id| api::user_by_id(&st, id)).ok_or_else(|| bad("код неправильний або застарів, надішліть новий"))?;
-    take_code(&st, u.id, "reset", &r.code)?;
+    // Код із шести цифр: 15 спроб на добу на акаунт, скільки б адрес не мав той, хто підбирає.
+    st.limit(format!("resettry:{}", u.id), 15, Duration::from_secs(24 * 3600))?;
+    // Одна відповідь на будь-яку невдачу, щоб вона не підказувала, чи є такий акаунт.
+    take_code(&st, u.id, "reset", &r.code).map_err(|_| bad("код неправильний або застарів, надішліть новий"))?;
     valid_password(&r.password, &u.name)?;
     let pass = hash_password(&r.password)?;
     {

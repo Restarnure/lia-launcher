@@ -88,9 +88,12 @@ pub fn profile_by(app: &App, col: &str, val: &str) -> Option<Profile> {
 
 /// Профіль, на який виписано ігровий токен. Ліцензійний профіль переходить до того, хто останнім довів
 /// ліцензію, і токени попереднього власника тоді вже не діють.
+/// Ігровий токен живе 30 днів: він є в аргументах процесу гри, тож вічним бути не має.
+const GAME_TOKEN_TTL: i64 = 30 * 24 * 3600_000;
+
 pub fn token_profile(app: &App, token: &str) -> Option<Profile> {
     let db = app.db.lock().unwrap();
-    let (pid, user): (i64, i64) = db.query_row("SELECT profile, user FROM tokens WHERE hash = ?1 AND profile IS NOT NULL", [api::token_hash(token)], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
+    let (pid, user): (i64, i64) = db.query_row("SELECT profile, user FROM tokens WHERE hash = ?1 AND profile IS NOT NULL AND created > ?2", rusqlite::params![api::token_hash(token), crate::now() - GAME_TOKEN_TTL], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
     db.query_row(&format!("SELECT {PROFILE_COLS} FROM profiles WHERE id = ?1 AND user = ?2"), [pid, user], row_profile).ok()
 }
 
@@ -238,6 +241,7 @@ pub async fn game_session(st: S, h: HeaderMap, Json(r): Json<SessionReq>) -> R<J
 /// serverId для перевірки ліцензії (див. game_session).
 pub async fn game_challenge(st: S, h: HeaderMap) -> R<Json<Value>> {
     let user = api::auth(&st, &h)?;
+    st.limit(format!("challenge:{}", user.id), 120, std::time::Duration::from_secs(3600))?;
     let sid = hex(&rand::random::<[u8; 16]>());
     st.challenges.lock().unwrap().insert(sid.clone(), (user.id, Instant::now()));
     Ok(Json(json!({ "serverId": sid })))
@@ -292,6 +296,7 @@ pub async fn join(st: S, Json(r): Json<JoinReq>) -> R<StatusCode> {
     if r.server_id.len() > 64 {
         return Err(bad("serverId"));
     }
+    st.limit(format!("join:{}", p.uuid), 120, std::time::Duration::from_secs(60))?;
     st.joins.lock().unwrap().insert(r.server_id, (p.uuid, p.name, Instant::now()));
     Ok(StatusCode::NO_CONTENT)
 }
@@ -333,6 +338,10 @@ pub async fn profile(st: S, h: HeaderMap, Path(id): Path<String>, Query(q): Quer
     };
     let signed = q.get("unsigned").map(String::as_str) == Some("false");
     if let Some(p) = profile_by(&st, "uuid", &uuid) {
+        // Підпис RSA-4096 дорогий, а запит без входу.
+        if signed && st.limit(format!("sig:{}", crate::client_ip(&h)), 120, std::time::Duration::from_secs(60)).is_err() {
+            return StatusCode::TOO_MANY_REQUESTS.into_response();
+        }
         return Json(profile_json(&st, &p, signed)).into_response();
     }
     // Скін ліцензійного гравця без ЛІЇ — з Mojang.

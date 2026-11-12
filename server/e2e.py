@@ -143,7 +143,7 @@ assert any(x["name"] == b for x in found)
 
 
 # WebSocket: Боб бачить статус Аліси
-def ws_connect(token, v="&v=99.0.0", status=b"101"):
+def ws_connect(token, v="&v=99.0.0", status=b"101", first=False):
     import ssl
     if B.startswith("https"):
         host = B.split("//")[1]
@@ -151,11 +151,13 @@ def ws_connect(token, v="&v=99.0.0", status=b"101"):
     else:
         sock = socket.create_connection(("127.0.0.1", int(B.rsplit(":", 1)[1])))
     key = base64.b64encode(os.urandom(16)).decode()
-    sock.sendall(f"GET /api/ws?token={token}{v} HTTP/1.1\r\nHost: {B.split('//')[1]}\r\nUser-Agent: Mozilla/5.0 LIA\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n".encode())
+    sock.sendall(f"GET /api/ws?{'x=1' if first else 'token=' + token}{v} HTTP/1.1\r\nHost: {B.split('//')[1]}\r\nUser-Agent: Mozilla/5.0 LIA\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n".encode())
     resp = b""
     while b"\r\n\r\n" not in resp:
         resp += sock.recv(1)
     assert status in resp.split(b"\r\n")[0], resp
+    if first:  # новий лаунчер: токен першим повідомленням, а не в адресі
+        ws_send(sock, json.dumps({"type": "auth", "token": token}))
     return sock
 
 
@@ -181,7 +183,7 @@ def ws_recv(sock, timeout=3):
 
 
 ws_connect(tb, "", b"426").close()  # старий лаунчер версії не називає
-wb = ws_connect(tb)
+wb = ws_connect(tb, first=True)
 assert req("POST", f"/api/friends/{a}", token=tb)[0] == 204  # прийняв
 s, fa = req("GET", "/api/friends", token=ta)
 assert [x["name"] for x in fa["friends"]] == [b], fa
@@ -199,7 +201,8 @@ lan.bind(("127.0.0.1", 0))
 lan.listen()
 lan_port = lan.getsockname()[1]
 ctl = socket.create_connection(RELAY)
-ctl.sendall(b"\x00LIA" + json.dumps({"kind": "host", "token": ta, "v": "99.0.0"}).encode() + b"\n")
+ticket = req("POST", "/api/relay/ticket", token=ta)[1]["ticket"]
+ctl.sendall(b"\x00LIA" + json.dumps({"kind": "host", "ticket": ticket, "v": "99.0.0"}).encode() + b"\n")
 f = ctl.makefile("r")
 hello = json.loads(f.readline())
 code = hello["code"]

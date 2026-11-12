@@ -24,7 +24,16 @@ pub struct Hub {
     pending: Mutex<HashMap<String, (TcpStream, Vec<u8>, String)>>,
     /// З'єднання, що ще не пройшли рукостискання, з кожного IP.
     handshakes: Mutex<HashMap<IpAddr, u32>>,
+    /// Скільки гравців зараз у кожному світі.
+    tunnels: Mutex<HashMap<String, u32>>,
 }
+
+/// Квиток з API діє хвилину й один раз.
+pub const TICKET_TTL: Duration = Duration::from_secs(60);
+/// Гравців в одному світі. LAN-світ більше й не тягне, а без межі з'єднаннями вичерпали б дескриптори.
+const TUNNELS_PER_WORLD: u32 = 32;
+/// Гра шле keep-alive що 15 с. Тунель, що мовчить 5 хв, мертвий або зловживання.
+const TUNNEL_IDLE: Duration = Duration::from_secs(300);
 
 /// Не більше стількох з'єднань з одного IP на етапі рукостискання (до 15 с): повільні з'єднання
 /// без жодного байта інакше вичерпали б дескриптори всього сервера, разом з HTTP.
@@ -91,7 +100,7 @@ async fn route(app: &Arc<App>, mut s: TcpStream) -> std::io::Result<Option<Cont>
         let s = r.into_inner();
         return Ok(match v["kind"].as_str() {
             // Старі лаунчери версії не називають, тож світ їм не відкриваємо (про оновлення каже API).
-            Some("host") if v["v"].as_str().and_then(crate::parse_version).is_some_and(|v| v >= app.cfg.min_launcher) => host(app.clone(), s, v["token"].as_str().unwrap_or("")),
+            Some("host") if v["v"].as_str().and_then(crate::parse_version).is_some_and(|v| v >= app.cfg.min_launcher) => host(app.clone(), s, v["ticket"].as_str(), v["token"].as_str().unwrap_or("")),
             Some("data") => data(app.clone(), s, v["id"].as_str().unwrap_or("")),
             _ => None,
         });
@@ -145,10 +154,13 @@ fn write_var(out: &mut Vec<u8>, mut v: i32) {
 
 /// Код світу з адреси в handshake: "ab12cd.play.lia.starnure.dev" → "ab12cd".
 /// Forge дописує "\0FML…\0", деякі клієнти — крапку в кінці.
+/// 10 символів з 32: перебором адресу чужого світу не знайти.
+const CODE_LEN: usize = 10;
+
 pub fn code_from_host(host: &str, domain: &str) -> Option<String> {
     let host = host.split('\0').next()?.trim_end_matches('.').to_ascii_lowercase();
     let code = host.strip_suffix(&format!(".{domain}"))?;
-    (code.len() == 6 && code.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())).then(|| code.to_string())
+    (code.len() == CODE_LEN && code.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())).then(|| code.to_string())
 }
 
 async fn player(app: &Arc<App>, mut s: TcpStream, first: u8) -> std::io::Result<Option<Cont>> {
@@ -208,17 +220,62 @@ async fn player(app: &Arc<App>, mut s: TcpStream, first: u8) -> std::io::Result<
 }
 
 fn data(app: Arc<App>, mut host: TcpStream, id: &str) -> Option<Cont> {
-    let (mut player, raw, _) = app.relay.pending.lock().unwrap().remove(id)?;
+    let (mut player, raw, code) = app.relay.pending.lock().unwrap().remove(id)?;
+    {
+        let mut t = app.relay.tunnels.lock().unwrap();
+        let n = t.entry(code.clone()).or_insert(0);
+        if *n >= TUNNELS_PER_WORLD {
+            return None;
+        }
+        *n += 1;
+    }
     Some(Box::pin(async move {
         if host.write_all(&raw).await.is_ok() {
-            let _ = tokio::io::copy_bidirectional(&mut player, &mut host).await;
+            pipe(&mut player, &mut host).await;
+        }
+        let mut t = app.relay.tunnels.lock().unwrap();
+        if let Some(n) = t.get_mut(&code) {
+            *n -= 1;
+            if *n == 0 {
+                t.remove(&code);
+            }
         }
     }))
 }
 
-fn host(app: Arc<App>, s: TcpStream, token: &str) -> Option<Cont> {
-    let user = api::token_user(&app, token).filter(|u| u.verified)?;
-    // ponytail: без ліміту гравців на світ; додати, якщо хтось почне роздавати світ на сотні людей.
+/// Перекачує байти в обидва боки, доки хтось не закриє з'єднання або воно не замовкне на TUNNEL_IDLE.
+async fn pipe(a: &mut TcpStream, b: &mut TcpStream) {
+    let (mut ar, mut aw) = a.split();
+    let (mut br, mut bw) = b.split();
+    let (mut ba, mut bb) = (vec![0u8; 16 * 1024], vec![0u8; 16 * 1024]);
+    loop {
+        let step = async {
+            tokio::select! {
+                n = ar.read(&mut ba) => match n {
+                    Ok(n) if n > 0 => bw.write_all(&ba[..n]).await.is_ok(),
+                    _ => false,
+                },
+                n = br.read(&mut bb) => match n {
+                    Ok(n) if n > 0 => aw.write_all(&bb[..n]).await.is_ok(),
+                    _ => false,
+                },
+            }
+        };
+        if !matches!(tokio::time::timeout(TUNNEL_IDLE, step).await, Ok(true)) {
+            break;
+        }
+    }
+}
+
+fn host(app: Arc<App>, s: TcpStream, ticket: Option<&str>, token: &str) -> Option<Cont> {
+    let user = match ticket {
+        Some(t) => {
+            let (id, at) = app.tickets.lock().unwrap().remove(t)?;
+            api::user_by_id(&app, id).filter(|u| u.verified && at.elapsed() < TICKET_TTL)?
+        }
+        // Лаунчери до 1.1.7 надсилають сюди токен сесії. Прибрати разом з підняттям LIA_MIN_LAUNCHER.
+        None => api::token_user(&app, token).filter(|u| u.verified)?,
+    };
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     let code = {
         let mut hosts = app.relay.hosts.lock().unwrap();
@@ -226,7 +283,7 @@ fn host(app: Arc<App>, s: TcpStream, token: &str) -> Option<Cont> {
             return None;
         }
         let code = loop {
-            let c: String = rand::random::<[u8; 6]>().iter().map(|b| b"abcdefghijkmnpqrstuvwxyz23456789"[(*b % 32) as usize] as char).collect();
+            let c: String = rand::random::<[u8; CODE_LEN]>().iter().map(|b| b"abcdefghijkmnpqrstuvwxyz23456789"[(*b % 32) as usize] as char).collect();
             if !hosts.contains_key(&c) {
                 break c;
             }
@@ -265,10 +322,11 @@ mod tests {
     #[test]
     fn codes() {
         let d = "play.lia.starnure.dev";
-        assert_eq!(code_from_host("ab12cd.play.lia.starnure.dev", d).as_deref(), Some("ab12cd"));
-        assert_eq!(code_from_host("AB12CD.play.lia.starnure.dev.", d).as_deref(), Some("ab12cd"));
-        assert_eq!(code_from_host("ab12cd.play.lia.starnure.dev\0FML3\0", d).as_deref(), Some("ab12cd"));
+        assert_eq!(code_from_host("ab12cd.play.lia.starnure.dev", d), None);
+        assert_eq!(code_from_host("ab12cd34ef.play.lia.starnure.dev", d).as_deref(), Some("ab12cd34ef"));
+        assert_eq!(code_from_host("AB12CD34EF.play.lia.starnure.dev.", d).as_deref(), Some("ab12cd34ef"));
+        assert_eq!(code_from_host("ab12cd34ef.play.lia.starnure.dev\0FML3\0", d).as_deref(), Some("ab12cd34ef"));
         assert_eq!(code_from_host("play.lia.starnure.dev", d), None);
-        assert_eq!(code_from_host("x.ab12cd.play.lia.starnure.dev", d), None);
+        assert_eq!(code_from_host("x.ab12cd34ef.play.lia.starnure.dev", d), None);
     }
 }
