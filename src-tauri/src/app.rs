@@ -567,11 +567,7 @@ pub async fn launch_instance(state: Arc<AppState>, id: String, server: Option<(S
             }
             let _ = app.emit("instances-changed", ());
             if on_launch == "minimize" || exit.crash.is_some() {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.unminimize();
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
+                crate::bring_to_front(&app);
             }
         })?;
         edit_instance(&ctx.paths, &id, |i| i.last_played = Some(util::now_ms()))?;

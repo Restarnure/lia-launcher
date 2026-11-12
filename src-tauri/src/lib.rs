@@ -27,15 +27,22 @@ use std::sync::Arc;
 use tauri::Manager;
 use tauri_plugin_window_state::StateFlags;
 
+/// Розгортає й показує головне вікно. Не викликаємо set_focus() з tao: коли Windows
+/// не дає вивести вікно наперед, він емулює натискання правого Alt, і це спрацьовує
+/// як гаряча клавіша в Discord та інших програмах. Просимо фокус чесно, без хака.
+pub fn bring_to_front(app: &tauri::AppHandle) {
+    let Some(w) = app.get_webview_window("main") else { return };
+    let _ = w.unminimize();
+    let _ = w.show();
+    #[cfg(windows)]
+    if let Ok(h) = w.hwnd() {
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(h.0 as _) };
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.unminimize();
-                let _ = w.show();
-                let _ = w.set_focus();
-            }
-        }))
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| bring_to_front(app)))
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)

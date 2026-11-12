@@ -51,4 +51,4 @@ panic = "abort"
 strip = true
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_Globalization"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_Globalization", "Win32_UI_WindowsAndMessaging"] }
