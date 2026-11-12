@@ -248,6 +248,9 @@ pub async fn cache_base(ctx: &Ctx, version_id: &str, mrpack: &Path) -> Result<Ve
 /// Завантажує архів базового модпака в тимчасовий файл.
 async fn download_base(ctx: &Ctx, base: &Base, task: &Arc<Task>) -> Result<PathBuf> {
     let tmp = ctx.paths.temp().join(format!("base-{}-{}.mrpack", base.version_id, util::now_ms()));
+    if !modrinth::allowed_host(&base.url) {
+        return Err(err("invalid_modpack", "базовий модпак з недозволеного джерела"));
+    }
     task.stage("modpack", 0, "");
     net::download(&ctx.http, &Dl::new(&base.url, tmp.clone(), Some(base.sha1.clone()), None), Some(task)).await?;
     Ok(tmp)
@@ -590,6 +593,10 @@ fn extract_base(mrpack: &Path, need: &[(PackFile, PathBuf)]) -> Result<()> {
         // client-overrides перекривають overrides.
         let name = [format!("client-overrides/{}", f.path), format!("overrides/{}", f.path)].into_iter().find(|n| zip.index_for_name(n).is_some());
         let mut e = zip.by_name(name.as_deref().ok_or_else(|| err("invalid_modpack", format!("у модпаку немає файлу {}", f.path)))?)?;
+        // Розмір заявляє автор збірки, а файл читається в пам'ять: більше 512 МБ не беремо.
+        if f.size > 512 * 1024 * 1024 {
+            return Err(err("invalid_modpack", format!("{}: файл завеликий", f.path)));
+        }
         let mut buf = vec![];
         (&mut e).take(f.size + 1).read_to_end(&mut buf)?;
         if hex::encode(sha1::Sha1::digest(&buf)) != f.sha1 {
@@ -654,7 +661,8 @@ async fn sync(ctx: &Ctx, inst: &mut Instance, pack: &str, m: &Manifest, prev: Op
     let (mut public, mut stored, mut from_base) = (vec![], vec![], vec![]);
     for f in &m.files {
         let dest = dest_of(&game, &f.path)?;
-        if KEEP.contains(&f.path.as_str()) && dest.exists() {
+        // Без огляду на регістр: на Windows «Options.txt» це той самий файл.
+        if KEEP.contains(&f.path.to_lowercase().as_str()) && dest.exists() {
             continue;
         }
         if let Some(url) = &f.url {
@@ -684,7 +692,7 @@ async fn sync(ctx: &Ctx, inst: &mut Instance, pack: &str, m: &Manifest, prev: Op
     // Прибираємо наприкінці: якщо завантаження обірветься, старі файли лишаться на місці.
     let now: HashSet<String> = m.files.iter().map(|f| f.path.to_lowercase()).collect();
     let gone: Vec<String> = match prev {
-        Some(s) => s.files.keys().filter(|p| !now.contains(&p.to_lowercase()) && !KEEP.contains(&p.as_str())).cloned().collect(),
+        Some(s) => s.files.keys().filter(|p| !now.contains(&p.to_lowercase()) && !KEEP.contains(&p.to_lowercase().as_str())).cloned().collect(),
         // Збірка, встановлена до 1.1.5: тоді збірка замінювала теку mods повністю.
         None => std::fs::read_dir(game.join("mods"))
             .into_iter()

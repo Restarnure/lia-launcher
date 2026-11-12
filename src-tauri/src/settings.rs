@@ -79,7 +79,14 @@ impl Settings {
     }
 
     pub fn load() -> Settings {
-        let mut s: Settings = util::read_json(&Self::file()).unwrap_or_default();
+        let file = Self::file();
+        let mut s: Settings = util::read_json(&file).unwrap_or_else(|_| {
+            // Пошкоджений файл відкладаємо, щоб наступне збереження не стерло його типовими значеннями.
+            if file.exists() {
+                let _ = std::fs::rename(&file, file.with_extension(format!("json.broken-{}", util::now_ms())));
+            }
+            Settings::default()
+        });
         s.sanitize();
         s
     }

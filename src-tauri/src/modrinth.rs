@@ -372,12 +372,16 @@ pub async fn apply_mrpack(ctx: &Ctx, path: &Path, inst: &mut Instance, task: &Ar
         }
         let dest = util::safe_join(&game, &f.path)?;
         let url = f.downloads.iter().find(|u| allowed_host(u)).ok_or_else(|| err("invalid_modpack", format!("файл {} з недозволеного джерела", f.path)))?;
-        dls.push(Dl::new(url, dest, f.hashes.get("sha1").cloned(), f.file_size));
+        // Специфікація вимагає sha1: без нього файл нічим звірити.
+        let sha1 = f.hashes.get("sha1").cloned().ok_or_else(|| err("invalid_modpack", format!("у файлу {} немає контрольної суми", f.path)))?;
+        dls.push(Dl::new(url, dest, Some(sha1), f.file_size));
     }
     net::download_all(&ctx.http, dls, task, "modpack_files", ctx.concurrency, true).await?;
 
     task.stage("modpack_overrides", 0, "");
     // client-overrides накладаються після overrides і перекривають їх (специфікація .mrpack).
+    // ponytail: загальна стеля 16 ГБ на розпаковане, щоб zip-бомба не заповнила диск. Більші модпаки: підняти.
+    let mut left: u64 = 16 << 30;
     for prefix in ["overrides/", "client-overrides/"] {
         for i in 0..zip.len() {
             let mut e = zip.by_index(i)?;
@@ -392,7 +396,11 @@ pub async fn apply_mrpack(ctx: &Ctx, path: &Path, inst: &mut Instance, task: &Ar
                 std::fs::create_dir_all(p)?;
             }
             let mut out = std::fs::File::create(&dest).ctx(|| dest.display().to_string())?;
-            std::io::copy(&mut e, &mut out)?;
+            let n = std::io::copy(&mut std::io::Read::take(&mut e, left + 1), &mut out)?;
+            if n > left {
+                return Err(err("invalid_modpack", "модпак завеликий після розпакування"));
+            }
+            left -= n;
         }
     }
 

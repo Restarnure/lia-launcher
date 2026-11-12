@@ -22,7 +22,13 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = path.with_extension(format!("tmp{}-{n}", std::process::id()));
-    std::fs::write(&tmp, bytes).ctx(|| tmp.display().to_string())?;
+    // sync_all: після вимкнення живлення файл не лишається заповненим нулями.
+    let write = || -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        std::io::Write::write_all(&mut f, bytes)?;
+        f.sync_all()
+    };
+    write().ctx(|| tmp.display().to_string())?;
     std::fs::rename(&tmp, path).ctx(|| path.display().to_string())
 }
 
@@ -67,13 +73,17 @@ pub fn safe_join(base: &Path, rel: &str) -> Result<PathBuf> {
     for c in p.components() {
         match c {
             // Windows відкидає крапки й пробіли в кінці: «...» означає саму теку.
-            Component::Normal(s) if !s.to_string_lossy().trim_end_matches(['.', ' ']).is_empty() => out.push(s),
+            // Двокрапка: «c:evil» посеред шляху Windows читає як диск, і push замінив би весь шлях.
+            Component::Normal(s) if !s.to_string_lossy().contains(':') && !s.to_string_lossy().trim_end_matches(['.', ' ']).is_empty() => out.push(s),
             Component::CurDir => {}
             _ => return Err(err("invalid", format!("небезпечний шлях у файлі: {rel}"))),
         }
     }
     if out == base {
         return Err(err("invalid", format!("порожній шлях: {rel}")));
+    }
+    if !out.starts_with(base) {
+        return Err(err("invalid", format!("небезпечний шлях у файлі: {rel}")));
     }
     Ok(out)
 }
@@ -169,6 +179,9 @@ mod tests {
         assert!(safe_join(base, "mods/../../evil").is_err());
         assert!(safe_join(base, "C:/Windows/evil").is_err());
         assert!(safe_join(base, "/etc/passwd").is_err());
+        assert!(safe_join(base, "x/c:version.dll").is_err());
+        assert!(safe_join(base, "x/d:evil/a.txt").is_err());
+        assert!(safe_join(base, "x/c:../y.txt").is_err());
         assert!(safe_join(base, "").is_err());
         assert!(safe_join(base, "...").is_err());
         assert!(safe_join(base, "mods/. .").is_err());

@@ -90,7 +90,8 @@ async fn world_through_relay() {
     println!("  сервер готовий за {:?}", t0.elapsed());
 
     let token = host.token.clone();
-    let (code, address) = lia::share("test", &token, 25599, || {}).await.expect("ретранслятор");
+    let ticket = lia::relay_ticket(&ctx.http, &token).await.expect("квиток ретранслятора");
+    let (code, address) = lia::share("test", &ticket, 25599, || {}).await.expect("ретранслятор");
     println!("  світ відкрито: {code} → {address}");
     let (h, p) = address.split_once(':').unwrap();
     let bot = Command::new("node").args([&env("LIA_TEST_BOT"), h, p, &guest_name, &guest_token, &guest_uuid, &lia::api()]).output().expect("бот");

@@ -118,7 +118,13 @@ pub fn startup(state: &AppState) {
     let ctx = state.ctx();
     tauri::async_runtime::spawn(async move {
         let p = ctx.paths.clone();
-        let _ = std::fs::remove_dir_all(p.temp());
+        // Прибираємо лише своє: тека даних може бути чужою текою, де вже є temp чи natives.
+        for e in std::fs::read_dir(p.temp()).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if ["modpack-", "base-", "installer-"].iter().any(|pre| name.starts_with(pre)) {
+                let _ = if e.path().is_dir() { std::fs::remove_dir_all(e.path()) } else { std::fs::remove_file(e.path()) };
+            }
+        }
         for inst in instances::list(&p) {
             launch::adopt(&ctx, &inst.id, &p.instance_dir(&inst.id));
         }
@@ -126,7 +132,9 @@ pub fn startup(state: &AppState) {
         let running: Vec<String> = launch::running().iter().map(|g| format!("{}-", g.instance_id)).collect();
         for e in std::fs::read_dir(p.natives_root()).into_iter().flatten().flatten() {
             let name = e.file_name().to_string_lossy().to_string();
-            if !running.iter().any(|r| name.starts_with(r)) {
+            // Наші теки звуться «збірка-час».
+            let ours = name.rsplit_once('-').is_some_and(|(_, ms)| !ms.is_empty() && ms.bytes().all(|b| b.is_ascii_digit()));
+            if ours && !running.iter().any(|r| name.starts_with(r)) {
                 let _ = std::fs::remove_dir_all(e.path());
             }
         }
@@ -175,6 +183,11 @@ pub async fn open_path(state: S<'_>, path: String, reveal: Option<bool>) -> Resu
         return Err(err("invalid", "шлях поза теками лаунчера"));
     }
     let reveal = reveal.unwrap_or(false);
+    // Файл відкриваємо лише як текст: модпак міг покласти в збірку .bat чи .exe.
+    let text = p.extension().and_then(|e| e.to_str()).is_some_and(|e| ["txt", "log"].contains(&e.to_ascii_lowercase().as_str()));
+    if !reveal && p.is_file() && !text {
+        return Err(err("invalid", "цей файл можна лише показати в теці"));
+    }
     // Теку створюємо (logs/ немає до першого запуску), але не на місці зниклого скріншота.
     if !p.exists() && !reveal {
         std::fs::create_dir_all(&p)?;
@@ -358,8 +371,9 @@ pub async fn instance_update(state: S<'_>, id: String, patch: InstancePatch) -> 
 pub async fn instance_set_icon_file(state: S<'_>, id: String, path: String) -> Result<Instance> {
     let paths = state.ctx().paths;
     let mut i = instances::get(&paths, &id)?;
-    let bytes = std::fs::read(&path)?;
-    if bytes.len() > 4 * 1024 * 1024 || !(bytes.starts_with(b"\x89PNG") || bytes.starts_with(&[0xFF, 0xD8]) || bytes.starts_with(b"RIFF")) {
+    let big = std::fs::metadata(&path)?.len() > 4 * 1024 * 1024;
+    let bytes = if big { Vec::new() } else { std::fs::read(&path)? };
+    if big || !(bytes.starts_with(b"\x89PNG") || bytes.starts_with(&[0xFF, 0xD8]) || bytes.starts_with(b"RIFF")) {
         return Err(err("invalid_image", "потрібне зображення PNG, JPEG або WebP до 4 МБ"));
     }
     util::write_atomic(&paths.instance_dir(&id).join("icon.png"), &bytes)?;
@@ -652,7 +666,10 @@ pub async fn featured_play(state: S<'_>) -> Result<String> {
                 }
             }
         }
-        task.finish::<()>(&Ok(()));
+        // Скасували встановлення модів: гру не запускаємо.
+        let r = task.check();
+        task.finish(&r);
+        r?;
     }
     // Сервер у списку «Мультиплеєр», навіть якщо гравець його звідти прибрав.
     servers::seed_servers(&ctx.paths.game_dir(&inst.id), &f);
@@ -780,6 +797,10 @@ pub async fn content_update(state: S<'_>, id: String, kind: String, file: String
     let ctx = state.ctx();
     let kind = Kind::parse(&kind)?;
     let inst = instances::get(&ctx.paths, &id)?;
+    // Гра тримає jar відкритим: старий файл не видалився б і мод був би у двох версіях.
+    if launch::get(&id).is_some() {
+        return Err(err("game_running", "закрийте гру, щоб змінити версію"));
+    }
     let task = ctx.task_for(inst.name.clone(), &inst.id);
     let r = async {
         let installed = modrinth::install(&ctx, &inst, &project_id, Some(&version_id), &task).await?;
@@ -1055,10 +1076,10 @@ pub async fn skins_list(state: S<'_>) -> Result<Value> {
 #[tauri::command]
 pub async fn skin_add_file(path: String) -> Result<skinlib::SkinView> {
     let p = PathBuf::from(&path);
-    let bytes = std::fs::read(&p)?;
-    if bytes.len() > 1024 * 1024 {
+    if std::fs::metadata(&p)?.len() > 1024 * 1024 {
         return Err(err("invalid_skin", "файл завеликий для скіна"));
     }
+    let bytes = std::fs::read(&p)?;
     let name = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     skinlib::add(&bytes, &name, None, "file")
 }
@@ -1109,7 +1130,13 @@ pub async fn skin_save_png(data: String, name: String, slim: bool, replace: Opti
 
 #[tauri::command]
 pub async fn skin_export(path: String, data: String) -> Result<()> {
-    std::fs::write(&path, png_from_data_url(&data)?)?;
+    // Лише справжній скін і лише у .png: команда не має бути способом записати будь-який файл.
+    let bytes = png_from_data_url(&data)?;
+    skinlib::inspect(&bytes)?;
+    if !path.to_ascii_lowercase().ends_with(".png") {
+        return Err(err("invalid_skin", "скін зберігається у файл .png"));
+    }
+    std::fs::write(&path, bytes)?;
     Ok(())
 }
 
@@ -1340,7 +1367,8 @@ pub async fn lia_share_world(state: S<'_>, instance_id: String, port: u16) -> Re
     let token = lia_token()?;
     let app = state.app.clone();
     let id = instance_id.clone();
-    let (code, address) = crate::lia::share(&instance_id, &token, port, move || {
+    let ticket = crate::lia::relay_ticket(&state.http, &token).await?;
+    let (code, address) = crate::lia::share(&instance_id, &ticket, port, move || {
         app.emit("lia-share-ended", json!({ "instanceId": id })).ok();
     })
     .await?;

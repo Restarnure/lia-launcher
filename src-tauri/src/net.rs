@@ -68,7 +68,13 @@ pub struct Dl {
 
 impl Dl {
     pub fn new(url: impl Into<String>, path: PathBuf, sha1: Option<String>, size: Option<u64>) -> Dl {
-        Dl { url: url.into(), path, sha1, size }
+        // Старі профілі Forge дають http: по ньому файл можна підмінити дорогою.
+        let url: String = url.into();
+        let url = match url.strip_prefix("http://") {
+            Some(rest) => format!("https://{rest}"),
+            None => url,
+        };
+        Dl { url, path, sha1, size }
     }
 
     fn is_valid(&self, verify_hash: bool) -> bool {
@@ -113,7 +119,10 @@ async fn try_download(http: &reqwest::Client, dl: &Dl, task: Option<&Task>) -> R
         tokio::fs::create_dir_all(dir).await.ctx(|| dir.display().to_string())?;
     }
     let name = dl.path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-    let tmp = dl.path.with_file_name(format!("{name}.part"));
+    // Свій .part на кожне завантаження: дві збірки, що качають ту саму бібліотеку, не пишуть в один файл.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dl.path.with_file_name(format!("{name}.{}-{n}.part", std::process::id()));
     let mut file = tokio::fs::File::create(&tmp).await.ctx(|| tmp.display().to_string())?;
     let mut hasher = Sha1::new();
     let mut written = 0u64;

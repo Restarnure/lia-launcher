@@ -220,16 +220,22 @@ async fn relay_conn(hello: Value) -> std::io::Result<TcpStream> {
     Ok(s)
 }
 
+/// Одноразовий квиток для ретранслятора. З'єднання з ним не шифроване, тож токен сесії туди не йде.
+pub async fn relay_ticket(http: &reqwest::Client, token: &str) -> Result<String> {
+    let v = call(http, reqwest::Method::POST, "/api/relay/ticket", Some(token), None).await?;
+    v["ticket"].as_str().map(str::to_string).ok_or_else(|| err("lia_relay", "сервер ЛІЇ не видав квиток для ретранслятора"))
+}
+
 /// Відкриває LAN-світ (порт `port` на цьому ПК) друзям через ретранслятор. Повертає (код, адреса).
 /// `on_end` викликається, коли з'єднання з ретранслятором обірвалося.
-pub async fn share(instance: &str, token: &str, port: u16, on_end: impl FnOnce() + Send + 'static) -> Result<(String, String)> {
+pub async fn share(instance: &str, ticket: &str, port: u16, on_end: impl FnOnce() + Send + 'static) -> Result<(String, String)> {
     // Уже відкрито: та сама адреса. Якщо світ на іншому порту (перевідкрили) чи з'єднання обірвалось, відкриваємо заново.
     let same = |s: &Share| s.port == port && !s.task.is_finished();
     if let Some(s) = shares().lock().unwrap().get(instance).filter(|s| same(s)) {
         return Ok((s.code.clone(), s.address.clone()));
     }
     // Версія: старіших лаунчерів ретранслятор не пускає.
-    let s = relay_conn(json!({ "kind": "host", "token": token, "v": env!("CARGO_PKG_VERSION") })).await.ctx(|| "ретранслятор ЛІЇ".into())?;
+    let s = relay_conn(json!({ "kind": "host", "ticket": ticket, "v": env!("CARGO_PKG_VERSION") })).await.ctx(|| "ретранслятор ЛІЇ".into())?;
     let (r, w) = s.into_split();
     let mut lines = BufReader::new(r).lines();
     let hello: Value = match tokio::time::timeout(std::time::Duration::from_secs(10), lines.next_line()).await {
@@ -316,7 +322,7 @@ mod tests {
         let r = &relay;
         let open = |code: &'static str| async move {
             let (h, mut ctl) = hello(r).await;
-            assert_eq!(h, json!({ "kind": "host", "token": "tok", "v": env!("CARGO_PKG_VERSION") }));
+            assert_eq!(h, json!({ "kind": "host", "ticket": "tok", "v": env!("CARGO_PKG_VERSION") }));
             ctl.get_mut().write_all(format!("{{\"code\":\"{code}\",\"address\":\"{code}.play.test:25570\"}}\n").as_bytes()).await.unwrap();
             ctl
         };

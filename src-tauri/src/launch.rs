@@ -427,7 +427,12 @@ async fn pump_logs(ctx: Ctx, game: Arc<Game>, mut rx: tokio::sync::mpsc::Unbound
         tokio::select! {
             msg = rx.recv() => match msg {
                 Some((stderr, bytes)) => {
-                    let line = decode(&bytes);
+                    let mut line = decode(&bytes);
+                    // Старі версії гри друкують токен сесії: у журнал і консоль він не йде.
+                    if let Some(i) = line.find("(Session ID is ") {
+                        line.truncate(i);
+                        line.push_str("(Session ID is ***)");
+                    }
                     if let Some(mut l) = parsers[stderr as usize].feed(&line, stderr) {
                         if l.t == 0 {
                             l.t = util::now_ms();

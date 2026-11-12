@@ -200,6 +200,14 @@ fn be(b: &[u8], i: usize, w: usize) -> Option<usize> {
 
 /// Довжина значення тегу типу `t` на початку `b`. None — обрізаний чи незнайомий формат.
 fn nbt_len(t: u8, b: &[u8]) -> Option<usize> {
+    nbt_len_at(t, b, 0)
+}
+
+/// `depth` обмежує вкладеність: servers.dat з модпака не має переповнити стек.
+fn nbt_len_at(t: u8, b: &[u8], depth: u32) -> Option<usize> {
+    if depth > 64 {
+        return None;
+    }
     let len = match t {
         1 => 1,
         2 => 2,
@@ -212,7 +220,7 @@ fn nbt_len(t: u8, b: &[u8]) -> Option<usize> {
         9 => {
             let (et, mut i) = (*b.first()?, 5);
             for _ in 0..be(b, 1, 4)? {
-                i += nbt_len(et, b.get(i..)?)?;
+                i += nbt_len_at(et, b.get(i..)?, depth + 1)?;
             }
             i
         }
@@ -225,7 +233,7 @@ fn nbt_len(t: u8, b: &[u8]) -> Option<usize> {
                     break i;
                 }
                 i += 2 + be(b, i, 2)?;
-                i += nbt_len(tt, b.get(i..)?)?;
+                i += nbt_len_at(tt, b.get(i..)?, depth + 1)?;
             }
         }
         _ => return None,
