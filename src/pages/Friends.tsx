@@ -65,7 +65,7 @@ async function joinFriend(u: LiaUser) {
   if (g.pack) {
     inst = s.instances.find((i) => i.modpack?.projectId === `lia:${g.pack}`);
     if (!inst) {
-      const ok = await confirmDialog({ title: t("lia.join_install", { name: g.name ?? "" }), text: t("lia.join_install_text") });
+      const ok = await confirmDialog({ title: t("lia.join_install", { name: g.name ?? "" }), text: t("lia.join_install_text"), ok: t("common.install") });
       if (!ok) return;
       inst = await installPack(g.pack);
     }

@@ -78,9 +78,11 @@ function connect() {
   const s = st.session;
   if (!s || !ready()) return set({ online: false });
   // Версія: User-Agent у вікна браузерний, а старіших лаунчерів сервер не пускає.
-  const sock = new WebSocket(`${s.api.replace(/^http/, "ws")}/api/ws?token=${encodeURIComponent(s.token)}&v=${encodeURIComponent(getState().info?.version ?? "")}`);
+  const sock = new WebSocket(`${s.api.replace(/^http/, "ws")}/api/ws?v=${encodeURIComponent(getState().info?.version ?? "")}`);
   ws = sock;
   sock.onopen = () => {
+    // Токен іде першим повідомленням, а не в адресі: адреса осідає в журналах проксі.
+    sock.send(JSON.stringify({ type: "auth", token: s.token }));
     set({ online: true });
     sendPresence();
   };

@@ -2,7 +2,7 @@ import { Copy, FolderOpen, Settings2, Trash2, Wrench } from "lucide-react";
 import { api, type Instance } from "../lib/api";
 import { ago, duration } from "../lib/format";
 import { t } from "../lib/i18n";
-import { fail, navigate, refreshInstances, toast, useStore } from "../lib/store";
+import { fail, getState, navigate, refreshInstances, toast, useStore } from "../lib/store";
 import { confirmDialog, InstanceIcon, LoaderBadge, Menu, PlayButton } from "./ui";
 
 export async function deleteInstance(inst: Instance) {
@@ -40,7 +40,13 @@ export function instanceMenu(inst: Instance) {
           .then(() => toast("success", t("instances.repair_done")))
           .catch(fail),
     },
-    { label: t("common.delete"), icon: <Trash2 size={16} />, danger: true, separator: true, onClick: () => void deleteInstance(inst) },
+    { label: t("common.delete"), icon: <Trash2 size={16} />, danger: true, separator: true, onClick: () =>
+        void deleteInstance(inst).then((ok) => {
+          // Видалили зі сторінки самої збірки: на ній більше нічого показувати.
+          const r = getState().route;
+          if (ok && r.page === "instance" && r.id === inst.id) navigate({ page: "instances" });
+        }),
+    },
   ];
 }
 

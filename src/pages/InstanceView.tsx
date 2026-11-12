@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { ArrowLeft, Clock, Compass, FilePlus2, FolderOpen, Globe2, ImageIcon, Package, Play, RefreshCw, Search, Trash2, X } from "lucide-react";
-import { api, type ContentItem, type ContentKind, type ContentUpdate, type Instance, type Shot, type World } from "../lib/api";
+import { ArrowLeft, Check, Clock, Compass, FilePlus2, FolderOpen, Globe2, ImageIcon, Package, Play, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { api, type Json, type ContentItem, type ContentKind, type ContentUpdate, type Instance, type Shot, type World } from "../lib/api";
 import { ago, bytes, date, duration } from "../lib/format";
 import { t, type Key } from "../lib/i18n";
 import { back, fail, launch, navigate, toast, useStore, type InstanceTab } from "../lib/store";
 import { instanceMenu } from "../components/InstanceCard";
-import { confirmDialog, Empty, InstanceIcon, LoaderBadge, Menu, PlayButton, Switch } from "../components/ui";
+import { confirmDialog, Empty, InstanceIcon, LoaderBadge, Menu, Modal, PlayButton, Switch } from "../components/ui";
 import { PublishButton } from "../components/Publish";
 import { FriendsPlayButton } from "../components/LiaId";
 import { Console } from "./Console";
@@ -104,12 +104,97 @@ function shortLoader(inst: Instance) {
 
 // ------------------------------------------------------------ моди / ресурспаки / шейдери
 
+/** Версії встановленого мода: змінити можна тут, без видалення й пошуку в каталозі. */
+function VersionPicker(props: { inst: Instance; kind: ContentKind; item: ContentItem; onClose: () => void; onPick: (v: Json) => void }) {
+  const { inst, kind, item } = props;
+  const running = useStore((s) => !!s.running[inst.id]);
+  const [all, setAll] = useState(false);
+  const [versions, setVersions] = useState<Json[] | null>(null);
+  const [limit, setLimit] = useState(50);
+
+  useEffect(() => {
+    let live = true;
+    setVersions(null);
+    const loaders = all || kind !== "mods" ? [] : inst.loader === "quilt" ? ["quilt", "fabric"] : [inst.loader];
+    api
+      .projectVersions(item.projectId!, loaders, all ? [] : [inst.mcVersion])
+      .then((v) => live && setVersions(v))
+      .catch((e) => {
+        if (!live) return;
+        fail(e);
+        setVersions([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [item.projectId, inst.loader, inst.mcVersion, kind, all]);
+
+  const file = item.file.replace(/\.disabled$/, "");
+  // Встановлену версію впізнаємо за назвою файлу. Номер версії запасний і лише коли він один такий:
+  // буває, що десяток версій мода мають той самий номер.
+  const byFile = (versions ?? []).find((v) => (v.files as Json[]).some((f) => f.filename === file));
+  const byNumber = (versions ?? []).filter((v) => !!item.version && v.version_number === item.version);
+  const currentId = byFile?.id ?? (byNumber.length === 1 ? byNumber[0].id : null);
+  const isCurrent = (v: Json) => v.id === currentId;
+
+  return (
+    <Modal title={item.name} onClose={props.onClose} size="wide">
+      {running && <p className="muted">{t("inst.close_game_first")}</p>}
+      {versions === null ? (
+        <div className="skeleton" style={{ height: 200 }} />
+      ) : versions.length === 0 ? (
+        <Empty title={t("browse.no_versions")} />
+      ) : (
+        <div className="list">
+          {versions.slice(0, limit).map((v) => {
+            const cur = isCurrent(v);
+            return (
+              <div key={v.id} className="list-row">
+                <span className={`badge vt ${v.version_type === "release" ? "green" : v.version_type === "beta" ? "yellow" : "red"}`}>{t(`browse.vt.${v.version_type as "release" | "beta" | "alpha"}`)}</span>
+                <div className="grow" style={{ minWidth: 0 }}>
+                  <b className="ellipsis" style={{ display: "block" }}>
+                    {v.name || v.version_number}
+                  </b>
+                  <small className="faint ellipsis" style={{ display: "block" }}>
+                    {v.version_number} · {(v.game_versions as string[]).slice(-4).join(", ")} · {date(v.date_published)}
+                  </small>
+                </div>
+                {cur ? (
+                  <span className="badge green">
+                    <Check size={12} />
+                    {t("inst.version_current")}
+                  </span>
+                ) : (
+                  <button className="btn sm" disabled={running} onClick={() => props.onPick(v)}>
+                    {t("inst.version_pick")}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {versions && versions.length > limit && (
+        <button className="btn" style={{ alignSelf: "center" }} onClick={() => setLimit((n) => n + 50)}>
+          {t("browse.load_more")}
+        </button>
+      )}
+      {!all && versions !== null && (
+        <button className="btn ghost sm" style={{ alignSelf: "center" }} title={t("inst.versions_all_hint")} onClick={() => setAll(true)}>
+          {t("inst.versions_all")}
+        </button>
+      )}
+    </Modal>
+  );
+}
+
 function ContentTab({ inst, kind }: { inst: Instance; kind: ContentKind }) {
   const [items, setItems] = useState<ContentItem[] | null>(null);
   const [q, setQ] = useState("");
   const [updates, setUpdates] = useState<ContentUpdate[] | null>(null);
   const [checking, setChecking] = useState(false);
   const [updating, setUpdating] = useState<Set<string>>(new Set());
+  const [picking, setPicking] = useState<ContentItem | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -253,7 +338,17 @@ function ContentTab({ inst, kind }: { inst: Instance; kind: ContentKind }) {
             return (
               <div key={item.file} className={`list-row ${item.enabled ? "" : "off"}`}>
                 <div className="thumb">{item.iconUrl ? <img src={item.iconUrl} alt="" /> : <Package size={20} className="faint" />}</div>
-                <div className="grow" style={{ minWidth: 0 }}>
+                <div
+                  className="grow"
+                  style={{ minWidth: 0, cursor: item.projectId ? "pointer" : undefined }}
+                  {...(item.projectId && {
+                    role: "button",
+                    tabIndex: 0,
+                    title: t("inst.change_version"),
+                    onClick: () => setPicking(item),
+                    onKeyDown: (e: React.KeyboardEvent) => e.key === "Enter" && setPicking(item),
+                  })}
+                >
                   <div className="row" style={{ gap: 8 }}>
                     <b className="ellipsis">{item.name}</b>
                     {item.version && <span className="faint ellipsis" style={{ fontSize: 12.5, maxWidth: 220 }}>{item.version}</span>}
@@ -283,6 +378,18 @@ function ContentTab({ inst, kind }: { inst: Instance; kind: ContentKind }) {
             );
           })}
         </div>
+      )}
+      {picking && (
+        <VersionPicker
+          inst={inst}
+          kind={kind}
+          item={picking}
+          onClose={() => setPicking(null)}
+          onPick={(v) => {
+            setPicking(null);
+            doUpdate([{ file: picking.file, projectId: picking.projectId!, versionId: v.id, versionNumber: v.version_number }]);
+          }}
+        />
       )}
     </div>
   );

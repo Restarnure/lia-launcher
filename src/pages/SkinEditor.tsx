@@ -23,7 +23,7 @@ import {
 import { api, type LibSkin } from "../lib/api";
 import { t, type Key } from "../lib/i18n";
 import { mirror, PARTS, rectAt, rects, type Layer, type Part, type Rect } from "../lib/skinmap";
-import { back, fail, toast } from "../lib/store";
+import { back, fail, setLeaveGuard, toast } from "../lib/store";
 import { confirmDialog, Modal, Seg, Switch } from "../components/ui";
 
 type Tool = "pencil" | "eraser" | "fill" | "picker" | "darken" | "lighten" | "noise";
@@ -264,12 +264,19 @@ export function SkinEditor({ start }: { start?: EditorStart }) {
     stroke.current = null;
   };
 
+  // Незбережений малюнок: перехід на будь-яку іншу сторінку (стрілка назад, бічне меню) спершу питає.
+  useEffect(() => {
+    setLeaveGuard(dirty ? () => confirmDialog({ title: t("editor.leave"), ok: t("common.leave"), danger: true }) : null);
+    return () => setLeaveGuard(null);
+  }, [dirty]);
+
   // ---------------------------------------------------------------- клавіші
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement;
       if (el.closest?.("input, textarea")) return;
-      const k = e.key.toLowerCase();
+      // За фізичною клавішею: на українській розкладці e.key це кирилиця, і Ctrl+Z чи Ctrl+S не спрацьовували.
+      const k = e.code.startsWith("Key") ? e.code.slice(3).toLowerCase() : e.code === "BracketLeft" ? "[" : e.code === "BracketRight" ? "]" : e.key.toLowerCase();
       if (e.ctrlKey && k === "z") {
         e.preventDefault();
         if (e.shiftKey) history(redo, undo);
@@ -315,7 +322,8 @@ export function SkinEditor({ start }: { start?: EditorStart }) {
     if (p) api.skinExport(p, dataUrl()).then(() => toast("success", t("editor.exported"))).catch(fail);
   };
 
-  const openSkin = (s: { name: string; data: string; slim: boolean; libId?: string | null }) => {
+  const openSkin = async (s: { name: string; data: string; slim: boolean; libId?: string | null }) => {
+    if (dirty && !(await confirmDialog({ title: t("editor.leave"), ok: t("common.leave"), danger: true }))) return;
     setName(s.name);
     setSlim(s.slim);
     setLibId(s.libId ?? null);
@@ -334,7 +342,7 @@ export function SkinEditor({ start }: { start?: EditorStart }) {
   return (
     <div className="page editor-page">
       <div className="page-head">
-        <button className="btn ghost icon" onClick={async () => (!dirty || (await confirmDialog({ title: t("editor.leave"), danger: true }))) && back()} title={t("common.back")}>
+        <button className="btn ghost icon" onClick={back} title={t("common.back")}>
           <ArrowLeft size={18} />
         </button>
         <input className="input editor-name" value={name} maxLength={32} onChange={(e) => setName(e.target.value)} />

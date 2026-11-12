@@ -233,7 +233,7 @@ export function LiaIdCard() {
       <button
         className="btn ghost sm"
         onClick={async () => {
-          if (!(await confirmDialog({ title: t("lia.logout_q") }))) return;
+          if (!(await confirmDialog({ title: t("lia.logout_q"), ok: t("lia.logout") }))) return;
           await api.liaLogout().catch(fail);
           refreshLia();
         }}

@@ -4,7 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AlertTriangle, Boxes, CheckCircle2, Compass, Copy, Download, FileText, Home, Info, Minus, Settings as SettingsIcon, Shirt, Square, Terminal, Users, X, XCircle } from "lucide-react";
 import { api, type ContentKind } from "../lib/api";
 import { bytes } from "../lib/format";
-import { t, type Key } from "../lib/i18n";
+import { errText, t, type Key } from "../lib/i18n";
 import { dismissToast, fail, getState, navigate, refreshInstances, setState, toast, useStore } from "../lib/store";
 import { Modal, Progress, SkinHead, stageLabel } from "./ui";
 import { UpdatePill } from "./Update";
@@ -98,7 +98,7 @@ function TasksButton() {
                       ? t("tasks.done")
                       : task.state === "cancelled"
                         ? t("tasks.cancelled")
-                        : t("tasks.failed")}
+                        : task.error ? errText(task.error) : t("tasks.failed")}
                 </small>
               </div>
             );
@@ -150,7 +150,7 @@ export function Toasts() {
   return (
     <div className="toasts">
       {toasts.map((x) => (
-        <div key={x.id} className={`toast ${x.kind}`} onClick={() => dismissToast(x.id)}>
+        <div key={x.id} className={`toast ${x.kind}`}>
           <span className="t-icon">
             {x.kind === "error" ? <AlertTriangle size={18} /> : x.kind === "success" ? <CheckCircle2 size={18} /> : <Info size={18} />}
           </span>
@@ -158,6 +158,10 @@ export function Toasts() {
             <b>{x.title}</b>
             {x.text && <p>{x.text}</p>}
           </div>
+          {/* Закриває лише хрестик: клік по тексту лишається для виділення й копіювання. */}
+          <button className="btn ghost sm icon" onClick={() => dismissToast(x.id)} aria-label={t("common.close")}>
+            <X size={15} />
+          </button>
         </div>
       ))}
     </div>

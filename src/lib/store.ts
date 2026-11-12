@@ -104,15 +104,29 @@ export function useStore<T>(sel: (s: State) => T): T {
 
 // ------------------------------------------------------------ навігація
 
+/** Сторінка з незбереженою роботою (редактор скінів) питає, перш ніж її покинути. */
+let leaveGuard: (() => Promise<boolean>) | null = null;
+
+export function setLeaveGuard(g: (() => Promise<boolean>) | null) {
+  leaveGuard = g;
+}
+
+function guarded(go: () => void) {
+  if (!leaveGuard) return go();
+  leaveGuard().then((ok) => ok && go());
+}
+
 export function navigate(route: Route) {
-  setState((s) => ({ route, history: [...s.history.slice(-30), s.route] }));
+  guarded(() => setState((s) => ({ route, history: [...s.history.slice(-30), s.route] })));
 }
 
 export function back() {
-  setState((s) => {
-    const prev = s.history[s.history.length - 1];
-    return prev ? { route: prev, history: s.history.slice(0, -1) } : {};
-  });
+  guarded(() =>
+    setState((s) => {
+      const prev = s.history[s.history.length - 1];
+      return prev ? { route: prev, history: s.history.slice(0, -1) } : {};
+    }),
+  );
 }
 
 // ------------------------------------------------------------ сповіщення
@@ -233,7 +247,8 @@ export async function init() {
           delete tasks[payload.id];
           return { tasks };
         });
-      }, 8000);
+        // Помилку треба встигнути прочитати.
+      }, payload.state === "error" ? 20000 : 8000);
     }
   });
 

@@ -74,11 +74,12 @@ export function ConfirmHost() {
       onClose={() => done(false)}
       foot={
         <>
-          <button className="btn ghost" onClick={() => done(false)}>
+          {/* У небезпечному вікні фокус на «Скасувати»: випадковий Enter нічого не видаляє. */}
+          <button className="btn ghost" onClick={() => done(false)} autoFocus={!!req.danger}>
             {t("common.cancel")}
           </button>
-          <button className={`btn ${req.danger ? "danger" : "primary"}`} onClick={() => done(true)} autoFocus>
-            {req.ok ?? t("common.delete")}
+          <button className={`btn ${req.danger ? "danger" : "primary"}`} onClick={() => done(true)} autoFocus={!req.danger}>
+            {req.ok ?? t(req.danger ? "common.delete" : "common.confirm")}
           </button>
         </>
       }
@@ -464,6 +465,11 @@ export function stageLabel(stage: string): string {
   return s === key ? t("common.preparing") : s;
 }
 
+/** Зупинка гри вбиває процес, тож спершу питаємо. */
+export async function stopGame(id: string) {
+  if (await confirmDialog({ title: t("game.stop_q"), text: t("game.stop_text"), ok: t("common.stop"), danger: true })) await kill(id);
+}
+
 export function PlayButton({ inst, size, server, label }: { inst: Instance; size?: "sm"; server?: { host: string; port?: number }; label?: string }) {
   const running = useStore((s) => s.running[inst.id]);
   const task = useInstanceTask(inst.id);
@@ -479,7 +485,7 @@ export function PlayButton({ inst, size, server, label }: { inst: Instance; size
   }
   if (running) {
     return (
-      <button className={`play running ${size ?? ""}`} onClick={() => kill(inst.id)} title={t("common.stop")}>
+      <button className={`play running ${size ?? ""}`} onClick={() => stopGame(inst.id)} title={t("common.stop")}>
         <Square size={size ? 14 : 16} fill="currentColor" />
         <span>{t("common.playing")}</span>
       </button>

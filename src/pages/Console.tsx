@@ -3,8 +3,8 @@ import { Copy, FolderOpen, Search, Square } from "lucide-react";
 import { api, type Instance, type LogLine } from "../lib/api";
 import { clock } from "../lib/format";
 import { t } from "../lib/i18n";
-import { fail, kill, setState, toast, useStore } from "../lib/store";
-import { Empty, Seg, Switch } from "../components/ui";
+import { fail, setState, toast, useStore } from "../lib/store";
+import { Empty, Seg, stopGame, Switch } from "../components/ui";
 
 const ROW = 20;
 const EMPTY: LogLine[] = [];
@@ -114,7 +114,7 @@ export function Console({ inst }: { inst: Instance }) {
           <FolderOpen size={16} />
         </button>
         {running && (
-          <button className="btn danger" onClick={() => kill(inst.id)}>
+          <button className="btn danger" onClick={() => stopGame(inst.id)}>
             <Square size={13} fill="currentColor" />
             {t("common.stop")}
           </button>
