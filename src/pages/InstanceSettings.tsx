@@ -19,6 +19,37 @@ async function patch(id: string, p: Record<string, unknown>) {
   }
 }
 
+// Розмір вікна: зберігаємо на виході з поля чи Enter і кажемо, що застосовано.
+// Ядро обрізає значення до меж, тому після збереження показуємо те, що воно записало.
+function SizeInput({ inst, k, placeholder }: { inst: Instance; k: "width" | "height"; placeholder: number }) {
+  const saved = inst[k] ?? null;
+  const [v, setV] = useState(saved == null ? "" : String(saved));
+  useEffect(() => setV(saved == null ? "" : String(saved)), [saved]);
+  return (
+    <input
+      className="input"
+      type="number"
+      min={1}
+      placeholder={String(placeholder)}
+      value={v}
+      onChange={(e) => setV(e.target.value)}
+      onBlur={async () => {
+        const n = v.trim() ? Math.round(Number(v)) : null;
+        if (n != null && !(n > 0)) return setV(saved == null ? "" : String(saved));
+        if (n === saved) return;
+        try {
+          const i = await api.instanceUpdate(inst.id, { [k]: n });
+          setV(i[k] == null ? "" : String(i[k]));
+          toast("success", t("iset.saved"));
+        } catch (e) {
+          fail(e);
+        }
+      }}
+      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+    />
+  );
+}
+
 export function InstanceSettings({ inst }: { inst: Instance }) {
   const settings = useStore((s) => s.settings);
   const info = useStore((s) => s.info);
@@ -145,21 +176,9 @@ export function InstanceSettings({ inst }: { inst: Instance }) {
       <section className="card pad set-card">
         <h3>{t("iset.window")}</h3>
         <div className="row">
-          <input
-            className="input"
-            type="number"
-            placeholder={String(settings?.width ?? 1280)}
-            defaultValue={inst.width ?? ""}
-            onBlur={(e) => patch(inst.id, { width: e.target.value ? Number(e.target.value) : null })}
-          />
+          <SizeInput inst={inst} k="width" placeholder={settings?.width ?? 1280} />
           <span className="faint">×</span>
-          <input
-            className="input"
-            type="number"
-            placeholder={String(settings?.height ?? 720)}
-            defaultValue={inst.height ?? ""}
-            onBlur={(e) => patch(inst.id, { height: e.target.value ? Number(e.target.value) : null })}
-          />
+          <SizeInput inst={inst} k="height" placeholder={settings?.height ?? 720} />
         </div>
         <label className="row" style={{ gap: 10 }}>
           <Switch on={inst.fullscreen ?? settings?.fullscreen ?? false} onChange={(v) => patch(inst.id, { fullscreen: v })} />
